@@ -22,6 +22,8 @@ pip-wheel-metadata/
 *.egg-info/
 .installed.cfg
 *.egg
+OASist.egg-info/
+dist/
 
 # Virtual environments
 .env
