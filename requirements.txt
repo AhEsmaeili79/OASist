@@ -1,0 +1,6 @@
+openapi-python-client==0.26.1
+requests>=2.31.0
+pyyaml>=6.0.1
+
+
+rich>=13.7.0

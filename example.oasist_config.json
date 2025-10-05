@@ -1,0 +1,35 @@
+{
+  "output_dir": "./clients",
+  "services": [
+    {
+      "key": "public_json",
+      "name": "Public JSON API",
+      "schema_url": "http://localhost/openapi.json",
+      "output_dir": "public_json_client",
+      "base_url": "http://localhost",
+      "package_name": "",
+      "prefer_json": true
+    },
+    {
+      "key": "admin",
+      "name": "test_admin",
+      "schema_url": "http://localhost:8004/api/schema/",
+      "output_dir": "test_admin",
+      "base_url": "http://localhost:8004",
+      "package_name": ""
+    },
+    {
+      "key": "local_yaml",
+      "name": "Local YAML API",
+      "schema_url": "http://localhost:8004/api/schema/",
+      "output_dir": "local_yaml_client",
+      "base_url": "http://localhost:8004",
+      "package_name": "",
+      "prefer_json": true,
+      "request_headers": {
+        "Accept": "application/vnd.oai.openapi+json, application/json"
+      }
+    }
+  ]
+}
+
