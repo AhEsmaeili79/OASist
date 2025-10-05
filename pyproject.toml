@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oasist-client"
+version = "0.1.0"
+description = "OASist Client Generator: generate Python clients from OpenAPI schemas"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "OASist", email = "support@example.com" }]
+keywords = ["openapi", "client", "generator", "oas", "oasist"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Environment :: Console",
+  "Topic :: Software Development :: Code Generators",
+]
+dependencies = [
+  "openapi-python-client==0.26.1",
+  "requests>=2.31.0",
+  "pyyaml>=6.0.1",
+  "rich>=13.7.0",
+]
+
+[project.urls]
+Homepage = "https://example.com/oasist"
+Repository = "https://example.com/oasist/repo"
+
+[project.scripts]
+oasist_client = "OASist.oasist_client:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["OASist*"]
+exclude = ["venv*", "clients*", "tests*"]
+
+

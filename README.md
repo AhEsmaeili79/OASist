@@ -13,30 +13,27 @@ Automated Python client generation from OpenAPI schemas. Simple, clean, and effi
 ## Installation
 
 ```bash
-# Install dependencies
-pip install openapi-python-client requests pyyaml
-
-# Make executable (optional)
-chmod +x oasist_client.py
+# Install from PyPI
+pip install oasist-client
 ```
 
 ## Quick Start
 
 ```bash
 # List all configured services
-python oasist_client.py list
+oasist_client list
 
 # Generate a specific client
-python oasist_client.py generate user
+oasist_client generate user
 
 # Generate all clients
-python oasist_client.py generate-all
+oasist_client generate-all
 
 # Show service details
-python oasist_client.py info user
+oasist_client info user
 
 # Force regenerate existing client
-python oasist_client.py generate user --force
+oasist_client generate user --force
 ```
 
 ## Configuration
@@ -124,34 +121,34 @@ user = client.users.get_user(user_id=123)
 
 ```bash
 # Show general help
-python oasist_client.py --help
-python oasist_client.py help
+oasist_client --help
+oasist_client help
 
 # Show command-specific help
-python oasist_client.py help generate
-python oasist_client.py generate --help
+oasist_client help generate
+oasist_client generate --help
 
 # List all services and their generation status
-python oasist_client.py list
+oasist_client list
 
 # Show detailed information about a service
-python oasist_client.py info <service_name>
+oasist_client info <service_name>
 ```
 
 ### Generation Commands
 
 ```bash
 # Generate client for a specific service
-python oasist_client.py generate <service_name>
+oasist_client generate <service_name>
 
 # Force regenerate (overwrite existing)
-python oasist_client.py generate <service_name> --force
+oasist_client generate <service_name> --force
 
 # Generate clients for all configured services
-python oasist_client.py generate-all
+oasist_client generate-all
 
 # Generate all with force overwrite
-python oasist_client.py generate-all --force
+oasist_client generate-all --force
 ```
 
 ### Update Commands
@@ -276,14 +273,14 @@ generator.add_service("prod", ServiceConfig(
 ### Example 1: Generate User Service Client
 
 ```bash
-$ python oasist_client.py generate user
+$ oasist_client generate user
 INFO: ✓ Generated client: user → clients/user_service
 ```
 
 ### Example 2: List All Services
 
 ```bash
-$ python oasist_client.py list
+$ oasist_client list
 
 📋 Configured Services:
   ✓ user                User Service                  http://192.168.100.11:8011/api/schema/
@@ -293,7 +290,7 @@ $ python oasist_client.py list
 ### Example 3: Service Information
 
 ```bash
-$ python oasist_client.py info user
+$ oasist_client info user
 
 📦 Service: user
    Name:        User Service
