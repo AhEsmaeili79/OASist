@@ -402,7 +402,24 @@ def load_services_from_config(generator: ClientGenerator, config_file: str = CON
 def main():
     """CLI entry point."""
     import sys
-    
+    from . import __version__
+
+    # Parse command line arguments first
+    args = sys.argv[1:]
+
+    # Check for version flag first
+    if len(args) > 0 and args[0] in ['--version', '-V']:
+        console.print(f"OASist {__version__}")
+        return
+
+    # Global help or `help` alias (show before banner)
+    if not args or args[0] in ['-h', '--help', 'help']:
+        if len(args) > 1:
+            print_command_help(args[1])
+        else:
+            print_help()
+        return
+
     # Fancy banner
     banner_text = Text("OASist Client Generator", style="accent")
     subtitle = Text("Generate Python clients from OpenAPI schemas", style="dim")
@@ -418,25 +435,15 @@ def main():
 
     # Initialize generator with configured output directory
     generator = ClientGenerator(output_base=Path(OUTPUT_DIR))
-    
+
     # Load services from configuration file
     with console.status("[accent]Loading configuration...", spinner="dots"):
         config_loaded = load_services_from_config(generator, CONFIG_FILE)
-    
+
     # Exit if no configuration loaded
     if not config_loaded:
         logger.error(f"Failed to load configuration from {CONFIG_FILE}")
         logger.error("Please create a configuration file: oasist_config.json")
-        return
-    
-    # Parse command
-    args = sys.argv[1:]
-    # Global help or `help` alias
-    if not args or args[0] in ['-h', '--help', 'help']:
-        if len(args) > 1:
-            print_command_help(args[1])
-        else:
-            print_help()
         return
     
     command = args[0]
@@ -469,7 +476,7 @@ def print_help():
     content.add_row("[bold]OASist Client Generator[/bold]")
     content.add_row("")
     content.add_row("[bold]USAGE[/bold]")
-    content.add_row("oasist_client <command> [options]")
+    content.add_row("oasist <command> [options]")
     content.add_row("")
     content.add_row("[bold]COMMANDS[/bold]")
     content.add_row("list                    List all services and their status")
@@ -480,19 +487,21 @@ def print_help():
     content.add_row("")
     content.add_row("[bold]GLOBAL OPTIONS[/bold]")
     content.add_row("--help, -h              Show this help message")
+    content.add_row("--version, -V           Show version information")
     content.add_row("")
     content.add_row("[bold]COMMON OPTIONS BY COMMAND[/bold]")
     content.add_row("generate, generate-all  --force  Regenerate even if exists")
     content.add_row("")
     content.add_row("[bold]EXAMPLES[/bold]")
-    content.add_row("oasist_client --help")
-    content.add_row("oasist_client help generate")
-    content.add_row("oasist_client generate --help")
-    content.add_row("oasist_client list")
-    content.add_row("oasist_client generate user")
-    content.add_row("oasist_client generate user --force")
-    content.add_row("oasist_client generate-all")
-    content.add_row("oasist_client info user")
+    content.add_row("oasist --help")
+    content.add_row("oasist --version")
+    content.add_row("oasist help generate")
+    content.add_row("oasist generate --help")
+    content.add_row("oasist list")
+    content.add_row("oasist generate user")
+    content.add_row("oasist generate user --force")
+    content.add_row("oasist generate-all")
+    content.add_row("oasist info user")
     console.print(Panel(content, title="Help", box=box.ROUNDED))
 
 
@@ -507,7 +516,7 @@ def print_command_help(command: str) -> None:
         body.add_row("List all configured services and their generation status.")
         body.add_row("")
         body.add_row("[bold]USAGE[/bold]")
-        body.add_row("oasist_client list [--help|-h]")
+        body.add_row("oasist list [--help|-h]")
         console.print(Panel(body, title="Command Help", box=box.ROUNDED))
         return
     if command == 'generate':
@@ -518,7 +527,7 @@ def print_command_help(command: str) -> None:
         body.add_row("Generate client for a specific service key defined in your config.")
         body.add_row("")
         body.add_row("[bold]USAGE[/bold]")
-        body.add_row("oasist_client generate <service> [--force] [--help|-h]")
+        body.add_row("oasist generate <service> [--force] [--help|-h]")
         body.add_row("")
         body.add_row("[bold]OPTIONS[/bold]")
         body.add_row("--force     Regenerate even if the client already exists (overwrite)")
@@ -532,7 +541,7 @@ def print_command_help(command: str) -> None:
         body.add_row("Generate clients for all configured services.")
         body.add_row("")
         body.add_row("[bold]USAGE[/bold]")
-        body.add_row("oasist_client generate-all [--force] [--help|-h]")
+        body.add_row("oasist generate-all [--force] [--help|-h]")
         body.add_row("")
         body.add_row("[bold]OPTIONS[/bold]")
         body.add_row("--force     Regenerate even if clients already exist (overwrite)")
@@ -546,7 +555,7 @@ def print_command_help(command: str) -> None:
         body.add_row("Show detailed information for a specific service key.")
         body.add_row("")
         body.add_row("[bold]USAGE[/bold]")
-        body.add_row("oasist_client info <service> [--help|-h]")
+        body.add_row("oasist info <service> [--help|-h]")
         console.print(Panel(body, title="Command Help", box=box.ROUNDED))
         return
     if command in ('-h', '--help', 'help', ''):
@@ -557,4 +566,5 @@ def print_command_help(command: str) -> None:
 
 if __name__ == "__main__":
     main()
+
 

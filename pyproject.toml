@@ -4,33 +4,40 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "OASist"
-version = "0.1.0"
+version = "0.1.2"
 description = "OASist Client Generator: generate Python clients from OpenAPI schemas"
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
-authors = [{ name = "OASist", email = "support@example.com" }]
+authors = [{ name = "AH Esmaeili", email = "ah.esmaeili.79@gmail.com" }]
 keywords = ["openapi", "client", "generator", "oas", "oasist"]
 classifiers = [
-  "Programming Language :: Python :: 3",
-  "License :: OSI Approved :: MIT License",
-  "Operating System :: OS Independent",
-  "Environment :: Console",
-  "Topic :: Software Development :: Code Generators",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Environment :: Console",
+    "Topic :: Software Development :: Code Generators",
 ]
 dependencies = [
-  "openapi-python-client==0.26.1",
-  "requests>=2.31.0",
-  "pyyaml>=6.0.1",
-  "rich>=13.7.0",
+    "openapi-python-client==0.26.1",
+    "requests>=2.31.0",
+    "pyyaml>=6.0.1",
+    "rich>=13.7.0",
 ]
 
 [project.urls]
-Homepage = "https://example.com/oasist"
-Repository = "https://example.com/oasist/repo"
+Repository = "https://github.com/AhEsmaeili79/OASist"
 
 [project.scripts]
-oasist_client = "OASist.oasist_client:main"
+oasist_client = "OASist.oasist:main"
 
 [tool.setuptools]
 include-package-data = true
@@ -40,4 +47,6 @@ where = ["."]
 include = ["OASist*"]
 exclude = ["venv*", "clients*", "tests*"]
 
-
+[tool.ruff]
+line-length = 100
+target-version = "py38"

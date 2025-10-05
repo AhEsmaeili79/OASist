@@ -21,19 +21,19 @@ pip install oasist-client
 
 ```bash
 # List all configured services
-oasist_client list
+oasist list
 
 # Generate a specific client
-oasist_client generate user
+oasist generate user
 
 # Generate all clients
-oasist_client generate-all
+oasist generate-all
 
 # Show service details
-oasist_client info user
+oasist info user
 
 # Force regenerate existing client
-oasist_client generate user --force
+oasist generate user --force
 ```
 
 ## Configuration
@@ -121,48 +121,48 @@ user = client.users.get_user(user_id=123)
 
 ```bash
 # Show general help
-oasist_client --help
-oasist_client help
+oasist --help
+oasist help
 
 # Show command-specific help
-oasist_client help generate
-oasist_client generate --help
+oasist help generate
+oasist generate --help
 
 # List all services and their generation status
-oasist_client list
+oasist list
 
 # Show detailed information about a service
-oasist_client info <service_name>
+oasist info <service_name>
 ```
 
 ### Generation Commands
 
 ```bash
 # Generate client for a specific service
-oasist_client generate <service_name>
+oasist generate <service_name>
 
 # Force regenerate (overwrite existing)
-oasist_client generate <service_name> --force
+oasist generate <service_name> --force
 
 # Generate clients for all configured services
-oasist_client generate-all
+oasist generate-all
 
 # Generate all with force overwrite
-oasist_client generate-all --force
+oasist generate-all --force
 ```
 
 ### Update Commands
 
 ```bash
 # Update existing client (alias for generate --force)
-python oasist_client.py generate <service_name> --force
+python oasist.py generate <service_name> --force
 ```
 
 ## Project Structure
 
 ```
 oasist/
-├── oasist_client.py       # Single-file generator (all-in-one)
+├── oasist.py       # Single-file generator (all-in-one)
 ├── README.md               # This file
 ├── .gitignore             # Git ignore rules
 └── clients/               # Generated clients directory
@@ -222,7 +222,7 @@ To use with Django management commands:
 
 ```python
 # In your Django management command
-from oasist_client import ClientGenerator, ServiceConfig
+from oasist import ClientGenerator, ServiceConfig
 
 generator = ClientGenerator(output_base=Path("./clients"))
 generator.add_service("user", ServiceConfig(...))
@@ -234,7 +234,7 @@ generator.generate("user")
 ### Programmatic Usage
 
 ```python
-from oasist_client import ClientGenerator, ServiceConfig
+from oasist import ClientGenerator, ServiceConfig
 from pathlib import Path
 
 # Create generator with custom output directory
@@ -273,14 +273,14 @@ generator.add_service("prod", ServiceConfig(
 ### Example 1: Generate User Service Client
 
 ```bash
-$ oasist_client generate user
+$ oasist generate user
 INFO: ✓ Generated client: user → clients/user_service
 ```
 
 ### Example 2: List All Services
 
 ```bash
-$ oasist_client list
+$ oasist list
 
 📋 Configured Services:
   ✓ user                User Service                  http://192.168.100.11:8011/api/schema/
@@ -290,7 +290,7 @@ $ oasist_client list
 ### Example 3: Service Information
 
 ```bash
-$ oasist_client info user
+$ oasist info user
 
 📦 Service: user
    Name:        User Service

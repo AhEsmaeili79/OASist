@@ -5,7 +5,7 @@ __all__ = [
     "ServiceConfig",
 ]
 
-from .oasist_client import ClientGenerator, ServiceConfig  # re-export for convenience
+from .oasist import ClientGenerator, ServiceConfig  # re-export for convenience
 
 __version__ = "0.1.0"
 
