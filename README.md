@@ -14,7 +14,7 @@ Automated Python client generation from OpenAPI schemas. Simple, clean, and effi
 
 ```bash
 # Install from PyPI
-pip install oasist-client
+pip install oasist
 ```
 
 ## Quick Start
