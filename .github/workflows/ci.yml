@@ -9,9 +9,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       matrix:
-        python-version: [3.8, 3.9, '3.10', '3.11', '3.12','3.13']
+        python-version: [3.9, '3.10', '3.11', '3.12', '3.13']
 
     steps:
     - uses: actions/checkout@v4
@@ -26,15 +27,18 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install pytest pytest-cov
+      timeout-minutes: 5
 
     - name: Lint with ruff
       run: |
         pip install ruff
         ruff check .
+      timeout-minutes: 3
 
     - name: Test with pytest
       run: |
         pytest --cov=oasist --cov-report=xml
+      timeout-minutes: 5
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v3
