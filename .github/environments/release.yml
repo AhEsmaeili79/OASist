@@ -1,0 +1,24 @@
+# Release environment configuration
+# This file defines the environment settings for PyPI publishing
+
+# Environment protection rules
+protection_rules:
+  # Require manual approval for releases
+  required_reviewers: []
+  
+  # Wait timer (in minutes) - optional
+  wait_timer: 0
+  
+  # Prevent self-review
+  prevent_self_review: false
+  
+  # Restrict to specific branches
+  deployment_branch_policy:
+    protected_branches: true
+    custom_branch_policies: false
+
+# Environment variables (if needed)
+environment_variables: {}
+
+# Environment secrets (if needed)
+environment_secrets: {}

@@ -2,6 +2,8 @@
 
 Generate type-safe Python clients from OpenAPI schemas with a beautiful CLI interface. Supports both JSON and YAML schemas with Orval-inspired configuration.
 
+with using **[openapi-python-client](https://github.com/openapi-generators/openapi-python-client)**
+
 ## Features
 
 - 🚀 Single-file implementation with rich CLI interface
