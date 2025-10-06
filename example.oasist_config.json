@@ -1,35 +1,43 @@
 {
-  "output_dir": "./clients",
-  "services": [
-    {
-      "key": "public_json",
-      "name": "Public JSON API",
-      "schema_url": "http://localhost/openapi.json",
-      "output_dir": "public_json_client",
-      "base_url": "http://localhost",
-      "package_name": "",
-      "prefer_json": true
+  "output_dir": "./test",
+  "projects": {
+    "user_service": {
+      "input": {
+        "target": "http://localhost:8001/openapi.json",
+        "prefer_json": true
+      },
+      "output": {
+        "dir": "user_service",
+        "name": "User Service",
+        "base_url": "http://localhost:8001",
+        "package_name": "user_service",
+        "disable_post_hooks": true
+      }
     },
-    {
-      "key": "admin",
-      "name": "test_admin",
-      "schema_url": "http://localhost:8004/api/schema/",
-      "output_dir": "test_admin",
-      "base_url": "http://localhost:8004",
-      "package_name": ""
+    "communication_service": {
+      "input": {
+        "target": "http://localhost:8002/openapi.json"
+      },
+      "output": {
+        "dir": "communication_service",
+        "name": "Communication Service",
+        "base_url": "http://localhost:8002",
+        "package_name": "communication_service",
+        "disable_post_hooks": true
+      }
     },
-    {
-      "key": "local_yaml",
-      "name": "Local YAML API",
-      "schema_url": "http://localhost:8004/api/schema/",
-      "output_dir": "local_yaml_client",
-      "base_url": "http://localhost:8004",
-      "package_name": "",
-      "prefer_json": true,
-      "request_headers": {
-        "Accept": "application/vnd.oai.openapi+json, application/json"
+    "local_yaml": {
+      "input": {
+        "target": "http://localhost:8004/api/schema/"
+      },
+      "output": {
+        "dir": "local_yaml_client",
+        "name": "Local YAML API",
+        "base_url": "http://localhost:8004",
+        "package_name": "local_yaml_client",
+        "disable_post_hooks": true
       }
     }
-  ]
+  }
 }
 

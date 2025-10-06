@@ -671,9 +671,9 @@ def print_command_help(command: str) -> None:
     console.print(Panel.fit(f"Unknown command '{command}'. Use --help for a list of commands.", title="Help", style="warning"))
 
 
-if __name__ == "__main__":
-    from ..oasist.oasist import main as _main  # type: ignore
-    _main()
+# if __name__ == "__main__":
+#     from ..oasist.oasist import main as _main  # type: ignore
+#     _main()
 
 
 

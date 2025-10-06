@@ -7,4 +7,4 @@ __all__ = [
 
 from .oasist import ClientGenerator, ServiceConfig  # re-export for convenience
 
-__version__ = "0.1.6"
+__version__ = "1.0.0"

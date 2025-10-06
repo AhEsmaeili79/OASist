@@ -24,6 +24,7 @@ pip-wheel-metadata/
 *.egg
 oasist.egg-info/
 dist/
+oasist_config.json
 
 # Virtual environments
 .env
