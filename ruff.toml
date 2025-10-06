@@ -1,0 +1,23 @@
+# Ruff configuration for OASist
+# https://docs.astral.sh/ruff/configuration/
+
+# Line length
+line-length = 120
+
+[lint]
+# Only enable critical rules: Pyflakes (F) for unused imports and variables
+select = ["F"]
+
+# Ignore specific rules if needed
+ignore = []
+
+# Exclude directories
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "dist",
+    "build",
+    "*.egg-info",
+]

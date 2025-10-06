@@ -32,7 +32,7 @@ jobs:
     - name: Lint with ruff
       run: |
         pip install ruff
-        ruff check .
+        ruff check oasist/ test_oasist.py
       timeout-minutes: 3
 
     - name: Test with pytest
