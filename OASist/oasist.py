@@ -25,13 +25,13 @@ from rich.text import Text
 from rich.rule import Rule
 from rich.align import Align
 
-# ============================================================================
+# ==========================================================================
 # CONFIGURATION - Modify these values as needed
-# ============================================================================
+# ==========================================================================
 OUTPUT_DIR = "./clients"  # Base directory where generated clients will be stored
 CONFIG_FILE = "oasist_config.json"  # Configuration file (JSON or Python)
 
-# ============================================================================
+# ==========================================================================
 
 RICH_THEME = Theme({
     "info": "bold cyan",
@@ -75,27 +75,47 @@ class ClientGenerator:
     
     def __init__(self, output_base: Path = Path("./clients")):
         self.output_base = output_base
-        self.output_base.mkdir(exist_ok=True)
         self.services: Dict[str, ServiceConfig] = {}
     
     def add_service(self, key: str, config: ServiceConfig) -> None:
         """Register a service configuration."""
         self.services[key] = config
     
-    def _build_headers(self, config: ServiceConfig) -> Dict[str, str]:
-        """Construct request headers, ensuring JSON negotiation if requested."""
-        headers = dict(config.request_headers or {})
-        if config.prefer_json and 'Accept' not in {k.title(): v for k, v in headers.items()}:
-            # Prefer OpenAPI JSON if server supports content negotiation
+    def _build_headers(self, resolved_format: str) -> Dict[str, str]:
+        """Construct request headers based on resolved format (json|yaml).
+
+        Headers are intentionally not loaded from configuration files to keep
+        runtime behavior centralized here.
+        """
+        headers: Dict[str, str] = {}
+        if resolved_format == 'json':
             headers['Accept'] = 'application/vnd.oai.openapi+json, application/json'
+        else:
+            # Encourage YAML when requested; servers often fall back to YAML/plain
+            headers['Accept'] = 'application/yaml, text/yaml, application/x-yaml, text/plain'
         return headers
 
-    def _fetch_schema(self, url: str, headers: Optional[Dict[str, str]] = None, params: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
-        """Fetch and parse OpenAPI schema from URL, supporting JSON or YAML."""
+    def _fetch_schema(self, url: str, headers: Optional[Dict[str, str]] = None, params: Optional[Dict[str, str]] = None, expected_format: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Fetch and parse OpenAPI schema from URL, supporting JSON or YAML.
+
+        If expected_format is provided ('json' or 'yaml'), prefer parsing accordingly
+        regardless of server Content-Type, with a graceful fallback.
+        """
         with console.status("[accent]Fetching OpenAPI schema...", spinner="dots"):
             try:
                 response = requests.get(url, headers=headers, params=params, timeout=30)
                 response.raise_for_status()
+                if expected_format == 'json':
+                    try:
+                        return response.json()
+                    except Exception:
+                        return yaml.safe_load(response.text)
+                if expected_format == 'yaml':
+                    try:
+                        return yaml.safe_load(response.text)
+                    except Exception:
+                        return response.json()
+                # Fallback to content-type based detection
                 content_type = response.headers.get('content-type', '')
                 if 'json' in content_type:
                     return response.json()
@@ -103,6 +123,20 @@ class ClientGenerator:
             except Exception as e:
                 logger.error(f"Schema fetch failed: {e}")
                 return None
+
+    def _infer_format_from_url(self, schema_url: str, prefer_json: bool) -> str:
+        """Infer schema format from URL extension, falling back to prefer_json.
+
+        - *.json → json (cannot be overridden)
+        - *.yaml or *.yml → yaml (cannot be overridden)
+        - otherwise → json if prefer_json else yaml
+        """
+        url = schema_url.lower()
+        if url.endswith('.json'):
+            return 'json'
+        if url.endswith('.yaml') or url.endswith('.yml'):
+            return 'yaml'
+        return 'json' if prefer_json else 'yaml'
 
     def _sanitize_security(self, schema: Dict[str, Any]) -> Dict[str, Any]:
         """Fix common mistakes in per-operation security requirements.
@@ -165,6 +199,35 @@ class ClientGenerator:
         finally:
             tmp.close()
         return tmp_path
+
+    def _inject_base_url_default(self, client_file: Path, base_url: str) -> None:
+        """Inject default base_url into generated client.py for both Client types.
+
+        This updates the attrs field declarations to include a default value:
+            _base_url: str = field(default="...", alias="base_url")
+        """
+        try:
+            text = client_file.read_text(encoding='utf-8')
+        except FileNotFoundError:
+            return
+        except Exception:
+            return
+
+        import re
+
+        pattern = r"_base_url:\s*str\s*=\s*field\((?:\s*alias=\"base_url\"\s*)\)"
+        replacement = f"_base_url: str = field(default=\"{base_url}\", alias=\"base_url\")"
+        new_text = re.sub(pattern, replacement, text)
+
+        # If alias-first or different argument order was used, handle that as well
+        pattern_alt = r"_base_url:\s*str\s*=\s*field\(alias=\"base_url\"\s*\)"
+        new_text = re.sub(pattern_alt, replacement, new_text)
+
+        if new_text != text:
+            try:
+                client_file.write_text(new_text, encoding='utf-8', newline='')
+            except Exception:
+                pass
     
     def _write_generator_config_tempfile(self, disable_post_hooks: bool) -> Optional[Path]:
         """Write a minimal config for openapi-python-client to disable post hooks when requested."""
@@ -188,14 +251,18 @@ class ClientGenerator:
             return False
         
         output_path = self.output_base / config.output_dir
+        # Ensure only the intended parent directories exist; avoid creating default bases eagerly
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         
         if output_path.exists() and not force:
             logger.warning(f"Client exists at {output_path}. Use --force to regenerate")
             return False
         
-        # Prefetch schema with optional headers/params. This also validates reachability.
-        headers = self._build_headers(config)
-        schema = self._fetch_schema(config.schema_url, headers=headers, params=config.request_params)
+        # Resolve desired format based on URL or prefer_json
+        resolved_format = self._infer_format_from_url(config.schema_url, config.prefer_json)
+        # Prefetch schema with headers matching the resolved format
+        headers = self._build_headers(resolved_format)
+        schema = self._fetch_schema(config.schema_url, headers=headers, params=config.request_params, expected_format=resolved_format)
         if not schema:
             return False
         # Sanitize common invalid shapes (e.g., security requirement objects)
@@ -206,7 +273,7 @@ class ClientGenerator:
             shutil.rmtree(output_path)
         
         # Write schema to a temp file and generate via --path to support custom headers and YAML/JSON uniformly
-        schema_path = self._write_schema_tempfile(schema, prefer_json=True)
+        schema_path = self._write_schema_tempfile(schema, prefer_json=(resolved_format == 'json'))
         base_cmd = [
             'openapi-python-client', 'generate',
             '--path', str(schema_path),
@@ -255,6 +322,15 @@ class ClientGenerator:
                     config_path.unlink(missing_ok=True)  # type: ignore[arg-type]
                 except Exception:
                     pass
+            # Avoid leaving empty client directories behind
+            try:
+                if output_path.exists() and output_path.is_dir():
+                    # Remove only if empty
+                    has_any = any(output_path.iterdir())
+                    if not has_any:
+                        output_path.rmdir()
+            except Exception:
+                pass
             return False
         
         try:
@@ -266,6 +342,8 @@ class ClientGenerator:
                 config_path.unlink(missing_ok=True)  # type: ignore[arg-type]
             except Exception:
                 pass
+        # Post-process generated client to set base_url default if possible
+        self._inject_base_url_default(output_path / 'client.py', config.base_url)
         console.print(f":sparkles: [success]Generated client[/success] [accent]{service_key}[/accent] → [bold]{output_path}[/bold]")
         return True
     
@@ -365,51 +443,80 @@ def load_services_from_config(generator: ClientGenerator, config_file: str = CON
         logger.error("Failed to parse configuration file")
         return False
     
-    # Update output directory if specified
+    # Update output directory if specified (do not create it eagerly)
     if 'output_dir' in config_data:
         generator.output_base = Path(config_data['output_dir'])
-        generator.output_base.mkdir(exist_ok=True)
     
-    # Load services
-    services = config_data.get('services', [])
-    if not services:
+    # Load services from Orval-like 'projects' or legacy 'services'
+    projects = config_data.get('projects')
+    services_loaded = 0
+    if isinstance(projects, dict) and projects:
+        for key, proj in projects.items():
+            if not key or not isinstance(proj, dict):
+                continue
+            input_cfg = proj.get('input', {}) or {}
+            output_cfg = proj.get('output', {}) or {}
+
+            config = ServiceConfig(
+                name=output_cfg.get('name', key),
+                schema_url=input_cfg.get('target', ''),
+                output_dir=output_cfg.get('dir', key),
+                base_url=output_cfg.get('base_url', ''),
+                package_name=output_cfg.get('package_name', ''),
+                request_headers={},  # headers handled internally
+                request_params=input_cfg.get('params', {}) or {},
+                prefer_json=bool(input_cfg.get('prefer_json', False)),
+                disable_post_hooks=bool(output_cfg.get('disable_post_hooks', True)),
+            )
+            generator.add_service(key, config)
+            services_loaded += 1
+    else:
+        services = config_data.get('services', [])
+        for service in services:
+            key = service.get('key')
+            if not key:
+                logger.warning(f"Skipping service without 'key' field: {service}")
+                continue
+            config = ServiceConfig(
+                name=service.get('name', key),
+                schema_url=service.get('schema_url', ''),
+                output_dir=service.get('output_dir', key),
+                base_url=service.get('base_url', ''),
+                package_name=service.get('package_name', ''),
+                request_headers={},  # headers handled internally
+                request_params=service.get('request_params', {}) or {},
+                prefer_json=bool(service.get('prefer_json', False)),
+                disable_post_hooks=bool(service.get('disable_post_hooks', True)),
+            )
+            generator.add_service(key, config)
+            services_loaded += 1
+
+    if services_loaded == 0:
         logger.error("No services found in configuration file")
         return False
-    
-    for service in services:
-        key = service.get('key')
-        if not key:
-            logger.warning(f"Skipping service without 'key' field: {service}")
-            continue
-        
-        config = ServiceConfig(
-            name=service.get('name', key),
-            schema_url=service.get('schema_url', ''),
-            output_dir=service.get('output_dir', key),
-            base_url=service.get('base_url', ''),
-            package_name=service.get('package_name', ''),
-            request_headers=service.get('request_headers', {}) or {},
-            request_params=service.get('request_params', {}) or {},
-            prefer_json=bool(service.get('prefer_json', False)),
-            disable_post_hooks=bool(service.get('disable_post_hooks', True)),
-        )
-        generator.add_service(key, config)
-    
-    logger.info(f"✓ Loaded {len(services)} services from {config_file}")
+    logger.info(f"✓ Loaded {services_loaded} services from {config_file}")
     return True
 
 
 def main():
     """CLI entry point."""
     import sys
-    from . import __version__
+    try:
+        from . import __version__
+    except ImportError:
+        # Fallback when run as script
+        try:
+            import oasist
+            __version__ = oasist.__version__
+        except ImportError:
+            __version__ = "unknown"
 
     # Parse command line arguments first
     args = sys.argv[1:]
 
     # Check for version flag first
     if len(args) > 0 and args[0] in ['--version', '-V']:
-        console.print(f"OASist {__version__}")
+        console.print(f"oasist {__version__}")
         return
 
     # Global help or `help` alias (show before banner)
@@ -565,6 +672,8 @@ def print_command_help(command: str) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    from ..oasist.oasist import main as _main  # type: ignore
+    _main()
+
 
 

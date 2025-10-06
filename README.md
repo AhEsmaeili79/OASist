@@ -1,14 +1,16 @@
 # OASist Client Generator
 
-Automated Python client generation from OpenAPI schemas. Simple, clean, and efficient.
+Generate type-safe Python clients from OpenAPI schemas with a beautiful CLI interface. Supports both JSON and YAML schemas with Orval-inspired configuration.
 
 ## Features
 
-- 🚀 Single-file implementation (no complexity)
-- 📦 Generate type-safe Python clients from OpenAPI specs
-- 🔄 Easy client updates and management
-- 🎯 CLI interface for all operations
-- 🏗️ Built with design patterns (Factory, Command)
+- 🚀 Single-file implementation with rich CLI interface
+- 📦 Generate type-safe Python clients from OpenAPI specs (JSON/YAML)
+- 🔄 Schema sanitization and validation
+- 🎯 Orval-inspired configuration format
+- 🏗️ Built with design patterns (Factory, Command, Dataclass)
+- ⚡ Automatic base URL injection and post-hook management
+- 🎨 Beautiful terminal UI with progress indicators
 
 ## Installation
 
@@ -40,36 +42,52 @@ oasist generate user --force
 
 ### Configuration
 
-The generator supports both JSON and YAML OpenAPI documents. It pre-fetches the schema with optional headers/params, then generates via a local temp file to ensure consistent handling of JSON and YAML. Configuration is provided via a single JSON file.
+The generator supports both JSON and YAML OpenAPI documents. It pre-fetches the schema with optional headers/params, then generates via a local temp file to ensure consistent handling of JSON and YAML. Configuration is provided via a single JSON file using an Orval-inspired "projects" structure.
 
 Create `oasist_config.json` in your project root:
 
 ```json
 {
-  "output_dir": "./clients",
-  "services": [
-    {
-      "key": "public_json",
-      "name": "Public JSON API",
-      "schema_url": "http://91.99.51.233:8001/openapi.json",
-      "output_dir": "public_json_client",
-      "base_url": "",
-      "package_name": "",
-      "prefer_json": true
+  "output_dir": "./test",
+  "projects": {
+    "user_service": {
+      "input": {
+        "target": "http://localhost:8001/openapi.json",
+        "prefer_json": true
+      },
+      "output": {
+        "dir": "user_service",
+        "name": "User Service",
+        "base_url": "http://localhost:8001",
+        "package_name": "user_service",
+        "disable_post_hooks": true
+      }
     },
-    {
-      "key": "local_yaml",
-      "name": "Local YAML API",
-      "schema_url": "http://localhost:8004/api/schema/",
-      "output_dir": "local_yaml_client",
-      "base_url": "http://localhost:8004",
-      "package_name": "",
-      "prefer_json": true,
-      "request_headers": {
-        "Accept": "application/vnd.oai.openapi+json, application/json"
+    "communication_service": {
+      "input": {
+        "target": "http://localhost:8002/openapi.json"
+      },
+      "output": {
+        "dir": "communication_service",
+        "name": "Communication Service",
+        "base_url": "http://localhost:8002",
+        "package_name": "communication_service",
+        "disable_post_hooks": true
+      }
+    },
+    "local_yaml": {
+      "input": {
+        "target": "http://localhost:8004/api/schema/"
+      },
+      "output": {
+        "dir": "local_yaml_client",
+        "name": "Local YAML API",
+        "base_url": "http://localhost:8004",
+        "package_name": "local_yaml_client",
+        "disable_post_hooks": true
       }
     }
-  ]
+  }
 }
 ```
 
@@ -77,29 +95,27 @@ Create `oasist_config.json` in your project root:
 
 ### Configuration Parameters
 
+#### Global Parameters
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `output_dir` | No | Base directory for all generated clients |
-| `services` | Yes | Array of service configurations |
-| `key` | Yes | Unique identifier for the service |
-| `name` | Yes | Human-readable service name |
-| `schema_url` | Yes | URL to OpenAPI schema endpoint |
-| `output_dir` | Yes | Directory name for generated client |
-| `base_url` | No | Service base URL (auto-detected if not provided) |
-| `package_name` | No | Python package name (auto-generated if not provided) |
-| `request_headers` | No | Extra HTTP headers for schema fetch (e.g., `Accept`) |
-| `request_params` | No | Extra query parameters for schema fetch |
-| `prefer_json` | No | If true, sets `Accept` to prefer OpenAPI JSON |
+| `output_dir` | No | Base directory for all generated clients (default: "./clients") |
+| `projects` | Yes | Object containing project configurations keyed by project name |
 
-### ServiceConfig Parameters
-
+#### Project Input Parameters
 | Parameter | Required | Description |
 |-----------|----------|-------------|
+| `target` | Yes | URL to OpenAPI schema endpoint |
+| `prefer_json` | No | If true, prefers JSON format over YAML |
+| `params` | No | Query parameters for schema fetch requests |
+
+#### Project Output Parameters
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `dir` | Yes | Directory name for generated client |
 | `name` | Yes | Human-readable service name |
-| `schema_url` | Yes | URL to OpenAPI schema endpoint |
-| `output_dir` | Yes | Directory name for generated client |
 | `base_url` | No | Service base URL (auto-detected if not provided) |
 | `package_name` | No | Python package name (auto-generated if not provided) |
+| `disable_post_hooks` | No | Disable post-generation hooks (default: true) |
 
 ## Usage in Code
 
@@ -128,6 +144,9 @@ oasist help
 oasist help generate
 oasist generate --help
 
+# Show version information
+oasist --version
+
 # List all services and their generation status
 oasist list
 
@@ -151,21 +170,22 @@ oasist generate-all
 oasist generate-all --force
 ```
 
-### Update Commands
-
-```bash
-# Update existing client (alias for generate --force)
-python oasist.py generate <service_name> --force
-```
-
 ## Project Structure
 
 ```
-oasist/
-├── oasist.py       # Single-file generator (all-in-one)
-├── README.md               # This file
-├── .gitignore             # Git ignore rules
-└── clients/               # Generated clients directory
+OASist/
+├── oasist/                 # Main package
+│   ├── __init__.py         # Package exports and version
+│   ├── oasist.py          # Single-file generator implementation
+│   └── __pycache__/       # Python cache files
+├── dist/                   # Distribution files (wheels, tarballs)
+├── venv/                   # Virtual environment
+├── oasist_config.json      # Configuration file
+├── example.oasist_config.json  # Example configuration
+├── pyproject.toml          # Project configuration
+├── requirements.txt        # Dependencies
+├── README.md              # This file
+└── test/                  # Generated clients directory (configurable)
     ├── user_service/      # Generated client example
     │   ├── pyproject.toml
     │   └── user_service_client/
@@ -211,10 +231,10 @@ logging.basicConfig(level=logging.DEBUG)
 
 ## Design Patterns Used
 
-- **Factory Pattern**: `ClientGenerator` creates configured clients
-- **Command Pattern**: CLI commands encapsulate operations
-- **Dataclass Pattern**: Immutable configuration objects
-- **Singleton Pattern**: Single generator instance manages all services
+- **Factory Pattern**: `ClientGenerator` creates and manages client generation
+- **Command Pattern**: CLI commands encapsulate different operations
+- **Dataclass Pattern**: Immutable `ServiceConfig` objects
+- **Builder Pattern**: Progressive configuration building
 
 ## Django Integration (Optional)
 
@@ -244,7 +264,8 @@ generator = ClientGenerator(output_base=Path("./my_clients"))
 generator.add_service("api", ServiceConfig(
     name="API Service",
     schema_url="https://api.example.com/openapi.json",
-    output_dir="api_client"
+    output_dir="api_client",
+    disable_post_hooks=True
 ))
 
 # Generate
@@ -262,9 +283,10 @@ generator.generate_all(force=True)
 ```python
 generator.add_service("prod", ServiceConfig(
     name="Production API",
-    schema_url="https://api.example.com/schema/",
+    schema_url="https://api.example.com/openapi.json",
     output_dir="prod_client",
-    base_url="https://api.example.com"  # Custom base URL
+    base_url="https://api.example.com",  # Custom base URL
+    disable_post_hooks=True
 ))
 ```
 
@@ -273,8 +295,8 @@ generator.add_service("prod", ServiceConfig(
 ### Example 1: Generate User Service Client
 
 ```bash
-$ oasist generate user
-INFO: ✓ Generated client: user → clients/user_service
+$ oasist generate user_service
+INFO: ✓ Generated client: user_service → test/user_service
 ```
 
 ### Example 2: List All Services
@@ -283,21 +305,21 @@ INFO: ✓ Generated client: user → clients/user_service
 $ oasist list
 
 📋 Configured Services:
-  ✓ user                User Service                  http://192.168.100.11:8011/api/schema/
-  ○ payment             Payment Service               http://192.168.100.11:8012/api/schema/
+  ○ user_service        User Service                  http://localhost:8001/openapi.json
+  ○ communication_service Communication Service       http://localhost:8002/openapi.json
+  ○ local_yaml          Local YAML API                http://localhost:8004/api/schema/
 ```
 
 ### Example 3: Service Information
 
 ```bash
-$ oasist info user
+$ oasist info user_service
 
-📦 Service: user
+📦 Service: user_service
    Name:        User Service
-   Schema URL:  http://192.168.100.11:8011/api/schema/
-   Output:      clients/user_service
-   Status:      Generated ✓
-   Modified:    2025-10-05 14:30:22
+   Schema URL:  http://localhost:8001/openapi.json
+   Output:      test/user_service
+   Status:      Not generated
 ```
 
 ## Contributing

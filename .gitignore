@@ -22,7 +22,7 @@ pip-wheel-metadata/
 *.egg-info/
 .installed.cfg
 *.egg
-OASist.egg-info/
+oasist.egg-info/
 dist/
 
 # Virtual environments
@@ -76,6 +76,5 @@ Thumbs.db
 clients/
 
 # Local configuration (do not commit secrets / local URLs)
-oasist_config.json
 
 
