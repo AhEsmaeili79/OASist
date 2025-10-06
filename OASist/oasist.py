@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 import tempfile
-import textwrap
 
 from rich.console import Console
 from rich.theme import Theme
@@ -566,7 +565,7 @@ def main():
     if command == 'list':
         generator.list_services()
     elif command == 'generate-all':
-        count = generator.generate_all(force)
+        generator.generate_all(force)
         # Summary already printed inside generate_all
     elif command == 'generate' and len(args) > 1:
         generator.generate(args[1], force)
