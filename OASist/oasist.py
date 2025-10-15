@@ -8,10 +8,13 @@ import requests
 import yaml
 import json
 import logging
+import os
+import re
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 import tempfile
+from dotenv import load_dotenv
 
 from rich.console import Console
 from rich.theme import Theme
@@ -50,6 +53,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger("oasist")
 
+# Load environment variables from .env file if it exists
+load_dotenv()
+
+
+def substitute_env_vars(text: str) -> str:
+    """Substitute environment variables in text using ${VAR_NAME} syntax.
+    
+    Supports both environment variables and fallback to the original value
+    if the environment variable is not found.
+    """
+    if not isinstance(text, str):
+        return text
+    
+    # Pattern to match ${VAR_NAME} or ${VAR_NAME:default_value}
+    pattern = r'\$\{([^}:]+)(?::([^}]*))?\}'
+    
+    def replace_var(match):
+        var_name = match.group(1)
+        default_value = match.group(2) if match.group(2) is not None else match.group(0)
+        return os.getenv(var_name, default_value)
+    
+    return re.sub(pattern, replace_var, text)
+
 
 @dataclass
 class ServiceConfig:
@@ -63,10 +89,30 @@ class ServiceConfig:
     request_params: Dict[str, str] = field(default_factory=dict)
     prefer_json: bool = False
     disable_post_hooks: bool = True
+    original_base_url: str = field(default="", init=False)  # Store original config value
     
     def __post_init__(self):
-        self.package_name = self.package_name or self.name.lower().replace('-', '_').replace(' ', '_')
-        self.base_url = self.base_url or self.schema_url.rsplit('/api/', 1)[0]
+        # Store original base_url before substitution
+        self.original_base_url = self.base_url
+        
+        # Substitute environment variables in all string fields except base_url
+        self.name = substitute_env_vars(self.name)
+        self.schema_url = substitute_env_vars(self.schema_url)
+        self.output_dir = substitute_env_vars(self.output_dir)
+        # Don't substitute base_url here - preserve env var references for injection
+        self.package_name = substitute_env_vars(self.package_name) or self.name.lower().replace('-', '_').replace(' ', '_')
+        
+        # Set default base_url if not provided (only if it's not an env var reference)
+        if not self.base_url or (self.base_url.startswith('${') and self.base_url.endswith('}') and not os.getenv(self.base_url[2:-1])):
+            # If base_url is empty or env var doesn't exist, derive from schema_url
+            self.base_url = self.schema_url.rsplit('/api/', 1)[0]
+        elif self.base_url.startswith('${') and self.base_url.endswith('}'):
+            # If it's an env var reference, substitute it for actual usage but keep original for injection
+            env_var_name = self.base_url[2:-1]
+            self.base_url = os.getenv(env_var_name, self.base_url)
+        else:
+            # Regular substitution for non-env-var base_urls
+            self.base_url = substitute_env_vars(self.base_url)
 
 
 class ClientGenerator:
@@ -199,10 +245,11 @@ class ClientGenerator:
             tmp.close()
         return tmp_path
 
-    def _inject_base_url_default(self, client_file: Path, base_url: str) -> None:
+    def _inject_base_url_default(self, client_file: Path, base_url: str, original_base_url: str = None) -> None:
         """Inject default base_url into generated client.py for both Client types.
 
-        This updates the attrs field declarations to include a default value:
+        This updates the attrs field declarations to include a default value that supports
+        both environment variables and hardcoded values:
             _base_url: str = field(default="...", alias="base_url")
         """
         try:
@@ -212,10 +259,42 @@ class ClientGenerator:
         except Exception:
             return
 
-        import re
+        # Use original_base_url if provided (this preserves the original config value)
+        config_base_url = original_base_url if original_base_url is not None else base_url
+        
+        # Escape the base_url for use in Python string literal
+        escaped_base_url = base_url.replace('\\', '\\\\').replace('"', '\\"')
+        
+        # Determine if this is an environment variable reference or hardcoded value
+        if config_base_url.startswith('${') and config_base_url.endswith('}'):
+            # Extract environment variable name from ${VAR_NAME} or ${VAR_NAME:default}
+            env_match = re.match(r'\$\{([^}:]+)(?::([^}]*))?\}', config_base_url)
+            if env_match:
+                env_var_name = env_match.group(1)
+                fallback_value = env_match.group(2) if env_match.group(2) is not None else ""
+                default_value = f'os.getenv("{env_var_name}", "{fallback_value}")'
+            else:
+                # Fallback if pattern doesn't match
+                default_value = f'os.getenv("", "{escaped_base_url}")'
+        else:
+            # Hardcoded value - use empty env var name with hardcoded fallback
+            default_value = f'os.getenv("", "{escaped_base_url}")'
+        
+        # Add os import if not already present
+        if 'import os' not in text and 'from os import' not in text:
+            # Find the first import statement and add os import after it
+            import_match = re.search(r'(from typing import[^\n]*\n)', text)
+            if import_match:
+                text = text.replace(import_match.group(1), import_match.group(1) + 'import os\n')
+            else:
+                # Fallback: add after the first line
+                lines = text.split('\n')
+                if len(lines) > 1:
+                    lines.insert(1, 'import os')
+                    text = '\n'.join(lines)
 
         pattern = r"_base_url:\s*str\s*=\s*field\((?:\s*alias=\"base_url\"\s*)\)"
-        replacement = f"_base_url: str = field(default=\"{base_url}\", alias=\"base_url\")"
+        replacement = f'_base_url: str = field(default={default_value}, alias="base_url")'
         new_text = re.sub(pattern, replacement, text)
 
         # If alias-first or different argument order was used, handle that as well
@@ -342,7 +421,7 @@ class ClientGenerator:
             except Exception:
                 pass
         # Post-process generated client to set base_url default if possible
-        self._inject_base_url_default(output_path / 'client.py', config.base_url)
+        self._inject_base_url_default(output_path / 'client.py', config.base_url, config.original_base_url)
         console.print(f":sparkles: [success]Generated client[/success] [accent]{service_key}[/accent] → [bold]{output_path}[/bold]")
         return True
     
@@ -414,7 +493,9 @@ def load_config_from_file(config_path: Path) -> Optional[Dict[str, Any]]:
     try:
         if config_path.suffix == '.json':
             with open(config_path, 'r') as f:
-                return json.load(f)
+                config_data = json.load(f)
+            # Substitute environment variables in the configuration data, but preserve base_url for injection
+            return substitute_env_vars_recursive(config_data, preserve_keys={'base_url'})
         logger.error(f"Unsupported config file format: {config_path.suffix}")
         return None
     
@@ -424,6 +505,33 @@ def load_config_from_file(config_path: Path) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Failed to load config: {e}")
         return None
+
+
+def substitute_env_vars_recursive(data: Any, preserve_keys: set = None) -> Any:
+    """Recursively substitute environment variables in nested data structures.
+    
+    Args:
+        data: The data to process
+        preserve_keys: Set of keys to preserve without substitution (for base_url injection)
+    """
+    if preserve_keys is None:
+        preserve_keys = set()
+        
+    if isinstance(data, str):
+        return substitute_env_vars(data)
+    elif isinstance(data, dict):
+        result = {}
+        for key, value in data.items():
+            # Preserve environment variable references for specific keys
+            if key in preserve_keys and isinstance(value, str) and value.startswith('${') and value.endswith('}'):
+                result[key] = value  # Keep original env var reference
+            else:
+                result[key] = substitute_env_vars_recursive(value, preserve_keys)
+        return result
+    elif isinstance(data, list):
+        return [substitute_env_vars_recursive(item, preserve_keys) for item in data]
+    else:
+        return data
 
 
 def load_services_from_config(generator: ClientGenerator, config_file: str = CONFIG_FILE) -> bool:
