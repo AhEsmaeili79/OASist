@@ -6,13 +6,15 @@ A comprehensive OpenAPI client generator with support for:
 - Auto-detection of base URLs
 - Rich CLI interface with progress tracking
 - Multiple schema format support (JSON/YAML)
+- Automatic code formatting with Black
 """
 
 __all__ = [
     "ClientGenerator",
     "ServiceConfig",
+    "CodeFormatter",
 ]
 
-from .oasist import ClientGenerator, ServiceConfig  # re-export for convenience
+from .oasist import ClientGenerator, ServiceConfig, CodeFormatter  # re-export for convenience
 
 __version__ = "1.1.0"

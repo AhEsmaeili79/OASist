@@ -194,6 +194,7 @@ class ServiceConfig:
     request_headers: Dict[str, str] = field(default_factory=dict)
     prefer_json: bool = False
     disable_post_hooks: bool = True
+    format_with_black: bool = True  # Auto-format generated code with Black
     original_base_url: str = field(default="", init=False)  # Track original before auto-detection
     
     def __post_init__(self):
@@ -352,6 +353,74 @@ class SchemaProcessor:
         return schema
 
 # ============================================================================
+# CODE FORMATTER
+# ============================================================================
+class CodeFormatter:
+    """Formats generated Python code using Black."""
+    
+    @staticmethod
+    def is_black_available() -> bool:
+        """Check if Black is installed and available.
+        
+        Returns:
+            True if Black is available, False otherwise
+        """
+        try:
+            result = subprocess.run(
+                ['black', '--version'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+            return False
+    
+    @staticmethod
+    def format_directory(directory: Path) -> bool:
+        """Format all Python files in directory using Black.
+        
+        Args:
+            directory: Directory containing Python files to format
+            
+        Returns:
+            True if formatting succeeded or was skipped, False on error
+        """
+        if not directory.exists() or not directory.is_dir():
+            logger.warning(f"Directory {directory} does not exist or is not a directory")
+            return False
+        
+        # Check if Black is available
+        if not CodeFormatter.is_black_available():
+            logger.warning("Black is not installed. Skipping code formatting.")
+            logger.info("To enable formatting, install Black: pip install black")
+            return True  # Not an error, just skip formatting
+        
+        try:
+            with console.status("[accent]Formatting code with Black...", spinner="dots"):
+                result = subprocess.run(
+                    ['black', '--quiet', str(directory)],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                
+                if result.returncode == 0:
+                    logger.info("✓ Code formatted successfully with Black")
+                    return True
+                else:
+                    error_msg = result.stderr.strip() if result.stderr else "Unknown error"
+                    logger.warning(f"Black formatting completed with warnings: {error_msg}")
+                    return True  # Still consider success if files were formatted
+                    
+        except subprocess.TimeoutExpired:
+            logger.error("Black formatting timeout after 60s")
+            return False
+        except Exception as e:
+            logger.error(f"Black formatting failed: {e}")
+            return False
+
+# ============================================================================
 # CLIENT GENERATOR
 # ============================================================================
 class GeneratorRunner:
@@ -391,17 +460,8 @@ class GeneratorRunner:
             True if generation succeeded, False otherwise
         """
         with temp_file({"post_hooks": []}, as_json=False) as config_path:
-            cmd = base_cmd + ['--config', str(config_path), '--no-post-hooks']
+            cmd = base_cmd + ['--config', str(config_path)]
             result = GeneratorRunner._execute(cmd)
-            
-            stderr_lower = result.stderr.lower() if result.stderr else ""
-            
-            # Retry without --no-post-hooks if unsupported
-            if result.returncode != 0 and ('no such option' in stderr_lower or 
-                                            'unrecognized arguments' in stderr_lower):
-                logger.warning("--no-post-hooks unsupported, retrying")
-                cmd = base_cmd + ['--config', str(config_path)]
-                result = GeneratorRunner._execute(cmd)
         
         return GeneratorRunner._check_result(result)
     
@@ -534,6 +594,10 @@ class ClientGenerator:
             if output_path.exists() and output_path.is_dir() and not any(output_path.iterdir()):
                 output_path.rmdir()
             return False
+        
+        # Format generated code with Black if enabled
+        if config.format_with_black:
+            CodeFormatter.format_directory(output_path)
         
         console.print(f":sparkles: [success]Generated[/success] [accent]{service_key}[/accent] → [bold]{output_path}[/bold]")
         return True
@@ -687,6 +751,7 @@ class ConfigLoader:
                     request_headers=input_cfg.get('headers', {}) or {},
                     prefer_json=bool(input_cfg.get('prefer_json', False)),
                     disable_post_hooks=bool(output_cfg.get('disable_post_hooks', True)),
+                    format_with_black=bool(output_cfg.get('format_with_black', True)),
                 )
                 generator.add_service(key, config)
                 count += 1
@@ -722,6 +787,7 @@ class ConfigLoader:
                     request_headers=service.get('request_headers', {}) or {},
                     prefer_json=bool(service.get('prefer_json', False)),
                     disable_post_hooks=bool(service.get('disable_post_hooks', True)),
+                    format_with_black=bool(service.get('format_with_black', True)),
                 )
                 generator.add_service(key, config)
                 count += 1

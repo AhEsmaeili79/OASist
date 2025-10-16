@@ -74,7 +74,6 @@ dmypy.json
 Thumbs.db
 
 # Generated clients
-clients/
 
 # Local configuration (do not commit secrets / local URLs)
 

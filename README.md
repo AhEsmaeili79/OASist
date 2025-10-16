@@ -8,6 +8,7 @@ Built on top of **[openapi-python-client](https://github.com/openapi-generators/
 
 - 🚀 Clean, modular Python package with rich CLI interface
 - 📦 Generate type-safe Python clients from OpenAPI specs (JSON/YAML)
+- ✨ **Automatic code formatting with Black** (optional, enabled by default)
 - 🔄 Schema sanitization and validation with security fixes
 - 🎯 Orval-inspired configuration format with environment variable support
 - 🏗️ Built with design patterns (Strategy, Command, Dataclass)
@@ -21,6 +22,12 @@ Built on top of **[openapi-python-client](https://github.com/openapi-generators/
 ```bash
 # Install from PyPI
 pip install oasist
+
+# Install with Black formatting support (recommended)
+pip install oasist[formatting]
+
+# Or install Black separately
+pip install black
 ```
 
 ## Quick Start
@@ -106,6 +113,60 @@ You can specify custom headers for schema fetch requests, which is useful for au
 }
 ```
 
+### Automatic Code Formatting with Black
+
+OASist automatically formats generated Python code using **Black** (if installed). This ensures clean, consistent code style across all generated clients.
+
+**Features:**
+- ✅ Enabled by default for all projects
+- ✅ Gracefully skips if Black is not installed (with helpful message)
+- ✅ Can be disabled per-project via configuration
+- ✅ Runs after successful client generation
+- ✅ Uses Black's default configuration (88-character line length)
+
+**Configuration:**
+
+```json
+{
+  "projects": {
+    "formatted_api": {
+      "input": {
+        "target": "https://api.example.com/openapi.json"
+      },
+      "output": {
+        "dir": "formatted_client",
+        "format_with_black": true  // Default: true
+      }
+    },
+    "unformatted_api": {
+      "input": {
+        "target": "https://api.example.com/openapi.json"
+      },
+      "output": {
+        "dir": "unformatted_client",
+        "format_with_black": false  // Disable formatting
+      }
+    }
+  }
+}
+```
+
+**Installing Black:**
+
+```bash
+# Install OASist with formatting support
+pip install oasist[formatting]
+
+# Or install Black separately
+pip install black
+```
+
+**What happens if Black is not installed?**
+- OASist will log a warning message
+- Generation will continue successfully
+- Code will be generated but not formatted
+- You'll see: "Black is not installed. Skipping code formatting."
+
 ### Basic Configuration
 
 Create `oasist_config.json` in your project root:
@@ -124,19 +185,26 @@ Create `oasist_config.json` in your project root:
         "name": "User Service",
         "base_url": "http://localhost:8001",
         "package_name": "user_service",
-        "disable_post_hooks": true
+        "format_with_black": true
       }
     },
-    "communication_service": {
+    "test": {
       "input": {
-        "target": "http://localhost:8002/openapi.json"
+        "target": "${TEST_SCHEMA_URL}",
+        "prefer_json": true,
+        "_comment": "Optional headers for the schema fetch request",
+        "headers": {
+          "Authorization": "Bearer ${API_TOKEN}",
+          "X-API-Key": "${API_KEY:default_key}"
+        }
       },
       "output": {
-        "dir": "communication_service",
-        "name": "Communication Service",
-        "base_url": "http://localhost:8002",
-        "package_name": "communication_service",
-        "disable_post_hooks": true
+        "dir": "test",
+        "name": "Test",
+        "base_url": "${TEST_BASE_URL}",
+        "package_name": "test",
+        "format_with_black": true,
+        "_comment": "Set format_with_black to false to disable automatic code formatting"
       }
     },
     "local_yaml": {
@@ -148,7 +216,7 @@ Create `oasist_config.json` in your project root:
         "name": "Local YAML API",
         "base_url": "http://localhost:8004",
         "package_name": "local_yaml_client",
-        "disable_post_hooks": true
+        "format_with_black": false
       }
     }
   }
@@ -180,7 +248,7 @@ Create `oasist_config.json` in your project root:
 | `name` | Yes | Human-readable service name |
 | `base_url` | No | Service base URL (auto-detected if not provided) |
 | `package_name` | No | Python package name (auto-generated if not provided) |
-| `disable_post_hooks` | No | Disable post-generation hooks (default: true) |
+| `format_with_black` | No | Enable Black code formatting (default: true) |
 
 ## Usage in Code
 
@@ -279,12 +347,21 @@ OASist/
 
 ## Requirements
 
+### Core Dependencies
 - Python 3.8+
 - openapi-python-client >= 0.26.1
 - requests >= 2.31.0
 - pyyaml >= 6.0.1
 - rich >= 13.7.0
 - python-dotenv >= 1.0.1
+
+### Optional Dependencies
+- black >= 23.0.0 (for automatic code formatting)
+
+Install with formatting support:
+```bash
+pip install oasist[formatting]
+```
 
 ## Troubleshooting
 
@@ -309,6 +386,28 @@ pip install --upgrade openapi-python-client
 Enable debug logging in code:
 ```python
 logging.basicConfig(level=logging.DEBUG)
+```
+
+### Black formatting not working
+Check if Black is installed:
+```bash
+black --version
+```
+
+Install Black if needed:
+```bash
+pip install black
+# Or
+pip install oasist[formatting]
+```
+
+Disable formatting if not needed:
+```json
+{
+  "output": {
+    "format_with_black": false
+  }
+}
 ```
 
 ## Design Patterns Used
@@ -361,7 +460,7 @@ generator.add_service("api", ServiceConfig(
     name="API Service",
     schema_url="https://api.example.com/openapi.json",
     output_dir="api_client",
-    disable_post_hooks=True
+    format_with_black=True  # Enable Black formatting
 ))
 
 # Generate
@@ -374,7 +473,7 @@ generator.generate_all(force=True)
 # for persistent changes instead of passing output_base parameter
 ```
 
-### Custom Base URL
+### Custom Base URL and Formatting Options
 
 ```python
 generator.add_service("prod", ServiceConfig(
@@ -382,7 +481,15 @@ generator.add_service("prod", ServiceConfig(
     schema_url="https://api.example.com/openapi.json",
     output_dir="prod_client",
     base_url="https://api.example.com",  # Custom base URL
-    disable_post_hooks=True
+    format_with_black=True  # Enable automatic Black formatting
+))
+
+# Disable formatting for specific service
+generator.add_service("legacy", ServiceConfig(
+    name="Legacy API",
+    schema_url="https://legacy.example.com/openapi.json",
+    output_dir="legacy_client",
+    format_with_black=False  # Disable formatting for this service
 ))
 ```
 

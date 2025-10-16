@@ -11,7 +11,7 @@
         "name": "User Service",
         "base_url": "http://localhost:8001",
         "package_name": "user_service",
-        "disable_post_hooks": true
+        "format_with_black": true
       }
     },
     "test": {
@@ -29,7 +29,8 @@
         "name": "Test",
         "base_url": "${TEST_BASE_URL}",
         "package_name": "test",
-        "disable_post_hooks": true
+        "format_with_black": true,
+        "_comment": "Set format_with_black to false to disable automatic code formatting do not put the directory in .gitignore if you want to effect of clean code generation"
       }
     },
     "local_yaml": {
@@ -41,7 +42,7 @@
         "name": "Local YAML API",
         "base_url": "http://localhost:8004",
         "package_name": "local_yaml_client",
-        "disable_post_hooks": true
+        "format_with_black": false
       }
     }
   }
