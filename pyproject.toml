@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oasist"
-version = "0.1.0"
-description = "OASist Client Generator: generate Python clients from OpenAPI schemas"
+version = "1.1.0"
+description = "OASist Client Generator: generate Python clients from OpenAPI schemas with custom headers and environment variable support"
 readme = "README.md"
 requires-python = ">=3.8"
 license = "MIT"
 authors = [{ name = "AH Esmaeili", email = "ah.esmaeili.79@gmail.com" }]
 keywords = ["openapi", "client", "generator", "oas", "oasist"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -24,10 +24,11 @@ classifiers = [
     "Topic :: Software Development :: Code Generators",
 ]
 dependencies = [
-    "openapi-python-client==0.26.1",
+    "openapi-python-client>=0.26.1,<1.0.0",
     "requests>=2.31.0",
     "pyyaml>=6.0.1",
     "rich>=13.7.0",
+    "python-dotenv>=1.0.1",
 ]
 
 [project.urls]
@@ -45,5 +46,5 @@ include = ["oasist*"]
 exclude = ["venv*", "clients*", "tests*"]
 
 [tool.ruff]
-line-length = 100
+line-length = 120
 target-version = "py38"

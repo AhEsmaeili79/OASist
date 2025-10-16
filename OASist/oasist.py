@@ -1,7 +1,17 @@
 #!/usr/bin/env python
-"""
-OASist Client Generator - Single-file implementation
-Generates Python clients from OpenAPI schemas with ease.
+"""OASist - OpenAPI Client Generator
+
+Generates Python API clients from OpenAPI/Swagger specifications.
+
+Architecture Notes:
+- Uses design patterns (Strategy, Command, Dataclass) for maintainability
+- While this adds some complexity, it provides:
+  * Better testability and extensibility
+  * Clear separation of concerns
+  * Type safety with dataclasses
+  * Easy addition of new commands and parsers
+- For simple use cases, the CLI provides a straightforward interface
+- For advanced use cases, the modular design allows programmatic usage
 """
 import subprocess
 import requests
@@ -10,10 +20,16 @@ import json
 import logging
 import os
 import re
-from pathlib import Path
-from typing import Optional, Dict, Any, List
-from dataclasses import dataclass, field
+import shutil
 import tempfile
+import sys
+from pathlib import Path
+from typing import Optional, Dict, Any, Protocol, Generator, List
+from dataclasses import dataclass, field
+from contextlib import contextmanager
+from datetime import datetime
+from abc import ABC, abstractmethod
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 
 from rich.console import Console
@@ -27,711 +43,916 @@ from rich.text import Text
 from rich.rule import Rule
 from rich.align import Align
 
-# ==========================================================================
-# CONFIGURATION - Modify these values as needed
-# ==========================================================================
-OUTPUT_DIR = "./clients"  # Base directory where generated clients will be stored
-CONFIG_FILE = "oasist_config.json"  # Configuration file (JSON or Python)
-
-# ==========================================================================
-
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+OUTPUT_DIR = "./clients"
+CONFIG_FILE = "oasist_config.json"
+HTTP_TIMEOUT = 30  # seconds
 RICH_THEME = Theme({
-    "info": "bold cyan",
-    "warning": "bold yellow",
-    "error": "bold red",
-    "success": "bold green",
-    "accent": "bold magenta",
-    "dim": "dim"
+    "info": "bold cyan", "warning": "bold yellow", "error": "bold red",
+    "success": "bold green", "accent": "bold magenta", "dim": "dim"
 })
 
+# Command names
+CMD_LIST = "list"
+CMD_GENERATE = "generate"
+CMD_GENERATE_ALL = "generate-all"
+CMD_INFO = "info"
+CMD_HELP = "help"
+
+# Exit codes
+EXIT_SUCCESS = 0
+EXIT_ERROR = 1
+
 console = Console(theme=RICH_THEME)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(message)s',
-    handlers=[RichHandler(console=console, rich_tracebacks=True, show_time=False, show_path=False)],
-)
+logging.basicConfig(level=logging.INFO, format='%(message)s',
+    handlers=[RichHandler(console=console, rich_tracebacks=True, show_time=False, show_path=False)])
 logger = logging.getLogger("oasist")
-
-# Load environment variables from .env file if it exists
 load_dotenv()
 
-
+# ============================================================================
+# UTILITIES
+# ============================================================================
 def substitute_env_vars(text: str) -> str:
-    """Substitute environment variables in text using ${VAR_NAME} syntax.
+    """Replace ${VAR} or ${VAR:default} with env values.
     
-    Supports both environment variables and fallback to the original value
-    if the environment variable is not found.
+    Warns if environment variable is not found and no default is provided.
     """
     if not isinstance(text, str):
         return text
     
-    # Pattern to match ${VAR_NAME} or ${VAR_NAME:default_value}
-    pattern = r'\$\{([^}:]+)(?::([^}]*))?\}'
-    
     def replace_var(match):
         var_name = match.group(1)
-        default_value = match.group(2) if match.group(2) is not None else match.group(0)
-        return os.getenv(var_name, default_value)
+        default_value = match.group(2)
+        env_value = os.getenv(var_name)
+        
+        if env_value is not None:
+            return env_value
+        elif default_value is not None:
+            return default_value
+        else:
+            logger.warning(f"Environment variable '{var_name}' not found and no default provided")
+            return match.group(0)  # Return original placeholder
     
-    return re.sub(pattern, replace_var, text)
+    return re.sub(r'\$\{([^}:]+)(?::([^}]*))?\}', replace_var, text)
 
+def substitute_recursive(data: Any) -> Any:
+    """Recursively substitute environment variables in nested data structures.
+    
+    Traverses dictionaries, lists, and strings to replace ${VAR} or ${VAR:default}
+    patterns with environment variable values.
+    
+    Args:
+        data: Data structure (str, dict, list, or primitive) to process
+        
+    Returns:
+        Processed data with environment variables substituted
+    """
+    if isinstance(data, str):
+        return substitute_env_vars(data)
+    if isinstance(data, dict):
+        return {k: substitute_recursive(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [substitute_recursive(item) for item in data]
+    return data
 
+@contextmanager
+def temp_file(content: Dict[str, Any], as_json: bool = True) -> Generator[Path, None, None]:
+    """Context manager for temp files with auto cleanup.
+    
+    Args:
+        content: Dictionary content to write to file
+        as_json: If True, write as JSON; otherwise write as YAML
+        
+    Yields:
+        Path to the temporary file
+        
+    Raises:
+        IOError: If file creation/write operations fail
+    """
+    suffix = '.json' if as_json else '.yaml'
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode='w', encoding='utf-8')
+    tmp_path = Path(tmp.name)
+    
+    try:
+        # Write content to file
+        if as_json:
+            json.dump(content, tmp, ensure_ascii=False, indent=2)
+        else:
+            yaml.safe_dump(content, tmp, sort_keys=False, allow_unicode=True)
+        tmp.flush()  # Ensure data is written
+        tmp.close()  # Close file handle before yielding
+        
+        yield tmp_path
+    except Exception as e:
+        # Close file if still open (during file creation)
+        try:
+            tmp.close()
+        except:
+            pass
+        # Only wrap IOError for file operations, not user code exceptions
+        if tmp_path.exists():
+            # File was created successfully, user code raised exception
+            raise
+        else:
+            # File creation failed
+            raise IOError(f"Failed to create temporary file: {e}") from e
+    finally:
+        # Always cleanup temp file
+        tmp_path.unlink(missing_ok=True)
+
+# ============================================================================
+# STRATEGY PATTERN - Schema Parsing
+# ============================================================================
+class SchemaParser(Protocol):
+    """Protocol for schema parsing strategies."""
+    def parse(self, text: str) -> Dict[str, Any]: ...
+
+class JSONParser:
+    """JSON schema parser."""
+    def parse(self, text: str) -> Dict[str, Any]:
+        return json.loads(text)
+
+class YAMLParser:
+    """YAML schema parser."""
+    def parse(self, text: str) -> Dict[str, Any]:
+        return yaml.safe_load(text)
+
+# ============================================================================
+# DATA CLASSES
+# ============================================================================
 @dataclass
 class ServiceConfig:
-    """Configuration for an OpenAPI service."""
+    """Service configuration with auto env var substitution and validation."""
     name: str
     schema_url: str
     output_dir: str
     base_url: str = ""
-    package_name: str = field(default="")
-    request_headers: Dict[str, str] = field(default_factory=dict)
+    package_name: str = ""
     request_params: Dict[str, str] = field(default_factory=dict)
+    request_headers: Dict[str, str] = field(default_factory=dict)
     prefer_json: bool = False
     disable_post_hooks: bool = True
-    original_base_url: str = field(default="", init=False)  # Store original config value
+    original_base_url: str = field(default="", init=False)  # Track original before auto-detection
     
     def __post_init__(self):
-        # Store original base_url before substitution
+        """Auto-substitute env vars, validate, and generate defaults."""
+        # Substitute environment variables in strings
+        for attr in ('name', 'schema_url', 'output_dir', 'package_name', 'base_url'):
+            setattr(self, attr, substitute_env_vars(getattr(self, attr)))
+        
+        # Substitute environment variables in dictionaries
+        self.request_params = substitute_recursive(self.request_params)
+        self.request_headers = substitute_recursive(self.request_headers)
+        
+        # Validate required fields
+        if not self.name or not self.name.strip():
+            raise ValueError("Service name cannot be empty")
+        if not self.schema_url or not self.schema_url.strip():
+            raise ValueError(f"Schema URL cannot be empty for service '{self.name}'")
+        if not self.output_dir or not self.output_dir.strip():
+            raise ValueError(f"Output directory cannot be empty for service '{self.name}'")
+        
+        # Validate URL format
+        if not self.schema_url.startswith(('http://', 'https://')):
+            raise ValueError(f"Schema URL must start with http:// or https:// for service '{self.name}'")
+        
+        # Track original base_url before auto-detection
         self.original_base_url = self.base_url
         
-        # Substitute environment variables in all string fields except base_url
-        self.name = substitute_env_vars(self.name)
-        self.schema_url = substitute_env_vars(self.schema_url)
-        self.output_dir = substitute_env_vars(self.output_dir)
-        # Don't substitute base_url here - preserve env var references for injection
-        self.package_name = substitute_env_vars(self.package_name) or self.name.lower().replace('-', '_').replace(' ', '_')
+        # Auto-detect base URL with fallback logic if not provided
+        if not self.base_url:
+            # Try common patterns: /api/, /openapi, /swagger
+            for pattern in ['/api/', '/openapi', '/swagger']:
+                if pattern in self.schema_url:
+                    self.base_url = self.schema_url.rsplit(pattern, 1)[0]
+                    break
+            # Fallback to origin (protocol + domain)
+            if not self.base_url:
+                parsed = urlparse(self.schema_url)
+                self.base_url = f"{parsed.scheme}://{parsed.netloc}"
         
-        # Set default base_url if not provided (only if it's not an env var reference)
-        if not self.base_url or (self.base_url.startswith('${') and self.base_url.endswith('}') and not os.getenv(self.base_url[2:-1])):
-            # If base_url is empty or env var doesn't exist, derive from schema_url
-            self.base_url = self.schema_url.rsplit('/api/', 1)[0]
-        elif self.base_url.startswith('${') and self.base_url.endswith('}'):
-            # If it's an env var reference, substitute it for actual usage but keep original for injection
-            env_var_name = self.base_url[2:-1]
-            self.base_url = os.getenv(env_var_name, self.base_url)
-        else:
-            # Regular substitution for non-env-var base_urls
-            self.base_url = substitute_env_vars(self.base_url)
+        # Generate package name from service name if not provided
+        self.package_name = (self.package_name or 
+                           self.name.lower().replace('-', '_').replace(' ', '_'))
+        
+        # Validate output_dir for path traversal and absolute paths
+        output_path = Path(self.output_dir)
+        # Check for path traversal, absolute paths, and Unix-style absolute paths
+        is_unix_absolute = self.output_dir.startswith('/')
+        if '..' in self.output_dir or output_path.is_absolute() or is_unix_absolute:
+            raise ValueError(f"Output directory must be relative and cannot contain '..': '{self.output_dir}'")
 
+# ============================================================================
+# SCHEMA PROCESSOR
+# ============================================================================
+class SchemaProcessor:
+    """Processes and sanitizes OpenAPI schemas."""
+    
+    HTTP_METHODS = {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+    
+    @staticmethod
+    def fetch(url: str, params: Dict[str, str], prefer_json: bool, custom_headers: Dict[str, str] = None) -> Optional[Dict[str, Any]]:
+        """Fetch schema with format preference and retry logic.
+        
+        Args:
+            url: URL to fetch schema from
+            params: Query parameters for the request
+            prefer_json: If True, prefer JSON format over YAML
+            custom_headers: Optional custom headers to include in request
+            
+        Returns:
+            Parsed schema dictionary or None on failure
+        """
+        headers = {'Accept': 'application/vnd.oai.openapi+json, application/json' if prefer_json 
+                   else 'application/yaml, text/yaml, application/x-yaml, text/plain'}
+        
+        # Merge custom headers (they override defaults)
+        if custom_headers:
+            headers.update(custom_headers)
+        
+        with console.status("[accent]Fetching schema...", spinner="dots"):
+            try:
+                response = requests.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT)
+                response.raise_for_status()
+                
+                # Check if response is empty
+                if not response.text or not response.text.strip():
+                    logger.error("Received empty response from schema URL")
+                    return None
+                
+                # Try preferred format first, then fallback
+                parsers = ([JSONParser(), YAMLParser()] if prefer_json or url.lower().endswith('.json')
+                          else [YAMLParser(), JSONParser()])
+                
+                last_error = None
+                for i, parser in enumerate(parsers):
+                    try:
+                        schema = parser.parse(response.text)
+                        if schema and isinstance(schema, dict):
+                            # Validate schema has required OpenAPI fields
+                            if not schema.get('openapi') and not schema.get('swagger'):
+                                logger.warning("Schema missing 'openapi' or 'swagger' version field")
+                            if not schema.get('paths') and not schema.get('webhooks'):
+                                logger.warning("Schema has no 'paths' or 'webhooks' defined")
+                            return schema
+                        elif schema is not None:
+                            logger.error(f"Schema is not a dictionary: {type(schema)}")
+                    except json.JSONDecodeError as e:
+                        last_error = f"JSON parsing failed: {e}"
+                        logger.debug(f"Parser {i+1} (JSON) failed: {e}")
+                    except yaml.YAMLError as e:
+                        last_error = f"YAML parsing failed: {e}"
+                        logger.debug(f"Parser {i+1} (YAML) failed: {e}")
+                    except Exception as e:
+                        last_error = f"Parsing failed: {e}"
+                        logger.debug(f"Parser {i+1} failed: {e}")
+                
+                # If all parsers failed, log the last error
+                if last_error:
+                    logger.error(f"All parsers failed. Last error: {last_error}")
+                return None
+                
+            except requests.exceptions.Timeout:
+                logger.error(f"Request timeout after {HTTP_TIMEOUT}s")
+                return None
+            except requests.exceptions.ConnectionError as e:
+                logger.error(f"Connection error: {e}")
+                return None
+            except requests.exceptions.HTTPError as e:
+                logger.error(f"HTTP error {e.response.status_code}: {e}")
+                return None
+            except Exception as e:
+                logger.error(f"Schema fetch failed: {e}")
+                return None
+    
+    @staticmethod
+    def sanitize_security(schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize invalid security requirement formats to OpenAPI spec."""
+        paths = schema.get('paths', {})
+        if not isinstance(paths, dict):
+            return schema
+        
+        for path_item in paths.values():
+            if not isinstance(path_item, dict):
+                continue
+            for method, op in path_item.items():
+                if method not in SchemaProcessor.HTTP_METHODS or not isinstance(op, dict):
+                    continue
+                
+                security = op.get('security')
+                if isinstance(security, dict):
+                    # Convert dict to list of separate requirements (OR logic)
+                    op['security'] = [{k: []} for k in security.keys()]
+                elif isinstance(security, list):
+                    op['security'] = [{k: v if isinstance(v, list) else [] 
+                                      for k, v in req.items()} 
+                                     for req in security if isinstance(req, dict)]
+        return schema
+
+# ============================================================================
+# CLIENT GENERATOR
+# ============================================================================
+class GeneratorRunner:
+    """Runs openapi-python-client with retry logic and error handling."""
+    
+    @staticmethod
+    def run(schema_path: Path, output_path: Path, disable_hooks: bool) -> bool:
+        """Execute generator with automatic retries.
+        
+        Args:
+            schema_path: Path to OpenAPI schema file
+            output_path: Output directory for generated client
+            disable_hooks: Whether to disable post-generation hooks
+            
+        Returns:
+            True if generation succeeded, False otherwise
+        """
+        base_cmd = [
+            'openapi-python-client', 'generate', '--path', str(schema_path),
+            '--output-path', str(output_path), '--meta', 'none',
+            '--overwrite', '--no-fail-on-warning'
+        ]
+        
+        if disable_hooks:
+            return GeneratorRunner._run_with_hooks_disabled(base_cmd)
+        else:
+            return GeneratorRunner._run_default(base_cmd)
+    
+    @staticmethod
+    def _run_with_hooks_disabled(base_cmd: list) -> bool:
+        """Run generator with post-hooks disabled.
+        
+        Args:
+            base_cmd: Base command list for generator
+            
+        Returns:
+            True if generation succeeded, False otherwise
+        """
+        with temp_file({"post_hooks": []}, as_json=False) as config_path:
+            cmd = base_cmd + ['--config', str(config_path), '--no-post-hooks']
+            result = GeneratorRunner._execute(cmd)
+            
+            stderr_lower = result.stderr.lower() if result.stderr else ""
+            
+            # Retry without --no-post-hooks if unsupported
+            if result.returncode != 0 and ('no such option' in stderr_lower or 
+                                            'unrecognized arguments' in stderr_lower):
+                logger.warning("--no-post-hooks unsupported, retrying")
+                cmd = base_cmd + ['--config', str(config_path)]
+                result = GeneratorRunner._execute(cmd)
+        
+        return GeneratorRunner._check_result(result)
+    
+    @staticmethod
+    def _run_default(base_cmd: list) -> bool:
+        """Run generator with default settings, retry on ruff failure.
+        
+        Args:
+            base_cmd: Base command list for generator
+            
+        Returns:
+            True if generation succeeded, False otherwise
+        """
+        result = GeneratorRunner._execute(base_cmd)
+        stderr_lower = result.stderr.lower() if result.stderr else ""
+        
+        # Retry with hooks disabled if ruff failed
+        if result.returncode != 0 and 'ruff failed' in stderr_lower:
+            logger.warning("Ruff failed, retrying with hooks disabled")
+            with temp_file({"post_hooks": []}, as_json=False) as config_path:
+                cmd = base_cmd + ['--config', str(config_path)]
+                result = GeneratorRunner._execute(cmd)
+        
+        return GeneratorRunner._check_result(result)
+    
+    @staticmethod
+    def _execute(cmd: list) -> subprocess.CompletedProcess:
+        """Execute subprocess command with UI spinner.
+        
+        Args:
+            cmd: Command list to execute
+            
+        Returns:
+            CompletedProcess instance with stdout and stderr
+        """
+        with console.status("[accent]Generating client...", spinner="bouncingBar"):
+            return subprocess.run(cmd, capture_output=True, text=True)
+    
+    @staticmethod
+    def _check_result(result: subprocess.CompletedProcess) -> bool:
+        """Check subprocess result and log errors.
+        
+        Args:
+            result: CompletedProcess instance from subprocess.run
+            
+        Returns:
+            True if returncode is 0, False otherwise
+        """
+        if result.returncode != 0:
+            # Log both stderr and stdout for better debugging
+            error_msg = result.stderr.strip() if result.stderr else ""
+            output_msg = result.stdout.strip() if result.stdout else ""
+            
+            if error_msg:
+                logger.error(f"Generation failed (stderr): {error_msg}")
+            if output_msg and output_msg != error_msg:
+                logger.error(f"Generation output (stdout): {output_msg}")
+            
+            if not error_msg and not output_msg:
+                logger.error("Generation failed with no output")
+        
+        return result.returncode == 0
 
 class ClientGenerator:
-    """Handles OpenAPI client generation operations."""
+    """Main orchestrator for client generation."""
     
     def __init__(self, output_base: Path = Path("./clients")):
         self.output_base = output_base
         self.services: Dict[str, ServiceConfig] = {}
     
     def add_service(self, key: str, config: ServiceConfig) -> None:
-        """Register a service configuration."""
+        """Register service."""
         self.services[key] = config
     
-    def _build_headers(self, resolved_format: str) -> Dict[str, str]:
-        """Construct request headers based on resolved format (json|yaml).
-
-        Headers are intentionally not loaded from configuration files to keep
-        runtime behavior centralized here.
-        """
-        headers: Dict[str, str] = {}
-        if resolved_format == 'json':
-            headers['Accept'] = 'application/vnd.oai.openapi+json, application/json'
-        else:
-            # Encourage YAML when requested; servers often fall back to YAML/plain
-            headers['Accept'] = 'application/yaml, text/yaml, application/x-yaml, text/plain'
-        return headers
-
-    def _fetch_schema(self, url: str, headers: Optional[Dict[str, str]] = None, params: Optional[Dict[str, str]] = None, expected_format: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Fetch and parse OpenAPI schema from URL, supporting JSON or YAML.
-
-        If expected_format is provided ('json' or 'yaml'), prefer parsing accordingly
-        regardless of server Content-Type, with a graceful fallback.
-        """
-        with console.status("[accent]Fetching OpenAPI schema...", spinner="dots"):
-            try:
-                response = requests.get(url, headers=headers, params=params, timeout=30)
-                response.raise_for_status()
-                if expected_format == 'json':
-                    try:
-                        return response.json()
-                    except Exception:
-                        return yaml.safe_load(response.text)
-                if expected_format == 'yaml':
-                    try:
-                        return yaml.safe_load(response.text)
-                    except Exception:
-                        return response.json()
-                # Fallback to content-type based detection
-                content_type = response.headers.get('content-type', '')
-                if 'json' in content_type:
-                    return response.json()
-                return yaml.safe_load(response.text)
-            except Exception as e:
-                logger.error(f"Schema fetch failed: {e}")
-                return None
-
-    def _infer_format_from_url(self, schema_url: str, prefer_json: bool) -> str:
-        """Infer schema format from URL extension, falling back to prefer_json.
-
-        - *.json → json (cannot be overridden)
-        - *.yaml or *.yml → yaml (cannot be overridden)
-        - otherwise → json if prefer_json else yaml
-        """
-        url = schema_url.lower()
-        if url.endswith('.json'):
-            return 'json'
-        if url.endswith('.yaml') or url.endswith('.yml'):
-            return 'yaml'
-        return 'json' if prefer_json else 'yaml'
-
-    def _sanitize_security(self, schema: Dict[str, Any]) -> Dict[str, Any]:
-        """Fix common mistakes in per-operation security requirements.
-
-        Some generators/servers emit invalid security requirement shapes like:
-          security: { Bearer: {type: http, scheme: bearer} }
-        But OpenAPI requires a list of maps with arrays of scopes:
-          security: [ { Bearer: [] } ]
-        This sanitizer converts dict values to empty-scope entries.
-        """
-        paths = schema.get('paths')
-        if not isinstance(paths, dict):
-            return schema
-        http_methods = {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
-        for _, path_item in paths.items():
-            if not isinstance(path_item, dict):
-                continue
-            for method, op in path_item.items():
-                if method not in http_methods or not isinstance(op, dict):
-                    continue
-                security = op.get('security')
-                if security is None:
-                    continue
-                # If it's already a list, keep it
-                if isinstance(security, list):
-                    # Normalize any dict entries to required list-of-scopes
-                    normalized: List[Dict[str, List[str]]] = []
-                    changed = False
-                    for req in security:
-                        if isinstance(req, dict):
-                            new_req: Dict[str, List[str]] = {}
-                            for k, v in req.items():
-                                if isinstance(v, list):
-                                    new_req[k] = v
-                                else:
-                                    new_req[k] = []
-                                    changed = True
-                            normalized.append(new_req)
-                        else:
-                            # Skip invalid entries
-                            changed = True
-                    if changed:
-                        op['security'] = normalized
-                    continue
-                # If it's a dict, convert to a list with empty scopes
-                if isinstance(security, dict):
-                    op['security'] = [{k: [] for k in security.keys()}]
-        return schema
-
-    def _write_schema_tempfile(self, schema: Dict[str, Any], prefer_json: bool = True) -> Path:
-        """Write schema dict to a temporary file (JSON by default) and return its path."""
-        suffix = '.json' if prefer_json else '.yaml'
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode='w', encoding='utf-8', newline='')
-        tmp_path = Path(tmp.name)
-        try:
-            if suffix == '.json':
-                json.dump(schema, tmp, ensure_ascii=False, indent=2)
-            else:
-                yaml.safe_dump(schema, tmp, sort_keys=False, allow_unicode=True)
-        finally:
-            tmp.close()
-        return tmp_path
-
-    def _inject_base_url_default(self, client_file: Path, base_url: str, original_base_url: str = None) -> None:
-        """Inject default base_url into generated client.py for both Client types.
-
-        This updates the attrs field declarations to include a default value:
-            _base_url: str = field(default="...", alias="base_url")
-        
-        The function is currently disabled to keep generated clients unchanged.
-        Environment variables are resolved in oasist_config.json at generation time only.
-        """
-        # Disabled: No modifications to generated client.py
-        # Environment variables in config are resolved at generation time by ServiceConfig.__post_init__
-        pass
-    
-    def _write_generator_config_tempfile(self, disable_post_hooks: bool) -> Optional[Path]:
-        """Write a minimal config for openapi-python-client to disable post hooks when requested."""
-        if not disable_post_hooks:
-            return None
-        # Use YAML as recommended by the upstream tool
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.yaml', mode='w', encoding='utf-8', newline='')
-        tmp_path = Path(tmp.name)
-        try:
-            # Only set post_hooks to [] so defaults are preserved otherwise
-            tmp.write("post_hooks: []\n")
-        finally:
-            tmp.close()
-        return tmp_path
-    
     def generate(self, service_key: str, force: bool = False) -> bool:
-        """Generate client for a service."""
+        """Generate client for service.
+        
+        Args:
+            service_key: Service identifier from configuration
+            force: If True, regenerate even if client exists
+            
+        Returns:
+            True if generation succeeded, False otherwise
+        """
         config = self.services.get(service_key)
         if not config:
             logger.error(f"Service '{service_key}' not found")
             return False
         
-        output_path = self.output_base / config.output_dir
-        # Ensure only the intended parent directories exist; avoid creating default bases eagerly
+        # Safely construct output path
+        try:
+            output_path = (self.output_base / config.output_dir).resolve()
+            
+            # Verify output path is within output_base to prevent path traversal
+            if not str(output_path).startswith(str(self.output_base.resolve())):
+                logger.error(f"Security: Output path escapes base directory: {output_path}")
+                return False
+        except ValueError as e:
+            logger.error(f"Invalid path value for output directory '{config.output_dir}': {e}")
+            return False
+        except OSError as e:
+            logger.error(f"OS error while resolving output path '{config.output_dir}': {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error resolving output path: {e}")
+            return False
+        
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
         if output_path.exists() and not force:
             logger.warning(f"Client exists at {output_path}. Use --force to regenerate")
             return False
         
-        # Resolve desired format based on URL or prefer_json
-        resolved_format = self._infer_format_from_url(config.schema_url, config.prefer_json)
-        # Prefetch schema with headers matching the resolved format
-        headers = self._build_headers(resolved_format)
-        schema = self._fetch_schema(config.schema_url, headers=headers, params=config.request_params, expected_format=resolved_format)
+        # Fetch and process schema
+        schema = SchemaProcessor.fetch(config.schema_url, config.request_params, config.prefer_json, config.request_headers)
         if not schema:
             return False
-        # Sanitize common invalid shapes (e.g., security requirement objects)
-        schema = self._sanitize_security(schema)
+        schema = SchemaProcessor.sanitize_security(schema)
         
+        # Clean output directory
         if output_path.exists():
-            import shutil
             shutil.rmtree(output_path)
         
-        # Write schema to a temp file and generate via --path to support custom headers and YAML/JSON uniformly
-        schema_path = self._write_schema_tempfile(schema, prefer_json=(resolved_format == 'json'))
-        base_cmd = [
-            'openapi-python-client', 'generate',
-            '--path', str(schema_path),
-            '--output-path', str(output_path),
-            '--meta', 'none',
-            '--overwrite',
-            '--no-fail-on-warning'
-        ]
-        cmd = list(base_cmd)
-        config_path: Optional[Path] = None
-        if config.disable_post_hooks:
-            # Prefer config file override; also try CLI flag for newer versions
-            config_path = self._write_generator_config_tempfile(disable_post_hooks=True)
-            if config_path is not None:
-                cmd.extend(['--config', str(config_path)])
-            cmd.append('--no-post-hooks')
+        # Generate client
+        is_json = config.prefer_json or config.schema_url.lower().endswith('.json')
+        with temp_file(schema, as_json=is_json) as schema_path:
+            success = GeneratorRunner.run(schema_path, output_path, config.disable_post_hooks)
         
-        # Animated spinner for generation
-        with console.status("[accent]Generating client with openapi-python-client...", spinner="bouncingBar"):
-            result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            stderr_lower = (result.stderr or '').lower()
-            # Retry if CLI flag unsupported
-            if config.disable_post_hooks and ('no such option' in stderr_lower or 'unrecognized arguments' in stderr_lower):
-                cmd = list(base_cmd)
-                if config_path is not None:
-                    cmd.extend(['--config', str(config_path)])
-                result = subprocess.run(cmd, capture_output=True, text=True)
-            # If ruff failed and hooks were not disabled, retry disabling via config only
-            elif 'ruff failed' in stderr_lower and not config.disable_post_hooks:
-                cfg_only = self._write_generator_config_tempfile(disable_post_hooks=True)
-                cmd = list(base_cmd)
-                if cfg_only is not None:
-                    cmd.extend(['--config', str(cfg_only)])
-                result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            logger.error(f"Generation failed: {result.stderr}")
-            try:
-                schema_path.unlink(missing_ok=True)  # type: ignore[arg-type]
-            except Exception:
-                pass
-            if config_path is not None:
-                try:
-                    config_path.unlink(missing_ok=True)  # type: ignore[arg-type]
-                except Exception:
-                    pass
-            # Avoid leaving empty client directories behind
-            try:
-                if output_path.exists() and output_path.is_dir():
-                    # Remove only if empty
-                    has_any = any(output_path.iterdir())
-                    if not has_any:
-                        output_path.rmdir()
-            except Exception:
-                pass
+        if not success:
+            if output_path.exists() and output_path.is_dir() and not any(output_path.iterdir()):
+                output_path.rmdir()
             return False
         
-        try:
-            schema_path.unlink(missing_ok=True)  # type: ignore[arg-type]
-        except Exception:
-            pass
-        if config_path is not None:
-            try:
-                config_path.unlink(missing_ok=True)  # type: ignore[arg-type]
-            except Exception:
-                pass
-        # Post-process generated client to set base_url default if possible
-        self._inject_base_url_default(output_path / 'client.py', config.base_url, config.original_base_url)
-        console.print(f":sparkles: [success]Generated client[/success] [accent]{service_key}[/accent] → [bold]{output_path}[/bold]")
+        console.print(f":sparkles: [success]Generated[/success] [accent]{service_key}[/accent] → [bold]{output_path}[/bold]")
         return True
     
     def generate_all(self, force: bool = False) -> int:
-        """Generate all registered clients."""
+        """Generate all clients with progress bar.
+        
+        Args:
+            force: If True, regenerate even if client exists
+            
+        Returns:
+            Number of successfully generated clients
+        """
         if not self.services:
+            logger.warning("No services configured - nothing to generate")
             return 0
-        total = len(self.services)
-        success_count = 0
-        with Progress(
-            SpinnerColumn(style="accent"),
-            TextColumn("[accent]Generating[/accent]"),
-            BarColumn(bar_width=None),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            TimeElapsedColumn(),
-            console=console,
-            transient=True,
-        ) as progress:
+        
+        total, success_count = len(self.services), 0
+        
+        with Progress(SpinnerColumn(style="accent"), TextColumn("[accent]Generating[/accent]"),
+                     BarColumn(bar_width=None), TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                     TimeElapsedColumn(), console=console, transient=True) as progress:
             task_id = progress.add_task("generate_all", total=total)
             for key in self.services:
-                ok = self.generate(key, force)
-                if ok:
+                if self.generate(key, force):
                     success_count += 1
                 progress.advance(task_id, 1)
+        
         console.print(f"[success]✓ Generated {success_count}/{total} clients")
         return success_count
     
     def list_services(self) -> None:
-        """Display all configured services."""
+        """Display all services."""
         if not self.services:
             console.print(Panel.fit("No services configured", title="Services", style="warning"))
             return
-
+        
         table = Table(title="Configured Services", box=box.ROUNDED, show_lines=False)
         table.add_column("Status", style="success", no_wrap=True)
         table.add_column("Key", style="accent")
         table.add_column("Name", style="info")
         table.add_column("Schema URL", style="dim")
+        
         for key, config in self.services.items():
             status = "✓" if (self.output_base / config.output_dir).exists() else "○"
             table.add_row(status, key, config.name, config.schema_url)
         console.print(table)
     
     def info(self, service_key: str) -> None:
-        """Show detailed service information."""
+        """Show service details."""
         config = self.services.get(service_key)
         if not config:
-            console.print(Panel.fit(f"Service '[bold]{service_key}[/bold]' not found", title="Error", style="error"))
+            console.print(Panel.fit(f"Service '[bold]{service_key}[/bold]' not found", 
+                                   title="Error", style="error"))
             return
         
         output_path = self.output_base / config.output_dir
         exists = output_path.exists()
-        from datetime import datetime
-        lines = Table.grid(padding=(0,1))
-        lines.add_column(justify="right", style="dim")
-        lines.add_column()
-        lines.add_row("Name", config.name)
-        lines.add_row("Schema URL", config.schema_url)
-        lines.add_row("Output", str(output_path))
-        lines.add_row("Status", "Generated ✓" if exists else "Not generated")
+        
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column(justify="right", style="dim")
+        grid.add_column()
+        grid.add_row("Name", config.name)
+        grid.add_row("Schema URL", config.schema_url)
+        grid.add_row("Base URL", config.base_url)
+        if config.original_base_url and config.original_base_url != config.base_url:
+            grid.add_row("Original Base URL", config.original_base_url or "(auto-detected)")
+        grid.add_row("Output", str(output_path))
+        grid.add_row("Status", "Generated ✓" if exists else "Not generated")
+        
         if exists:
             mtime = datetime.fromtimestamp(output_path.stat().st_mtime)
-            lines.add_row("Modified", mtime.strftime('%Y-%m-%d %H:%M:%S'))
-        console.print(Panel(lines, title=f"Service: [accent]{service_key}[/accent]", box=box.ROUNDED))
-
-
-def load_config_from_file(config_path: Path) -> Optional[Dict[str, Any]]:
-    """Load configuration from JSON config file."""
-    try:
-        if config_path.suffix == '.json':
-            with open(config_path, 'r') as f:
-                config_data = json.load(f)
-            # Substitute environment variables in the configuration data, but preserve base_url for injection
-            return substitute_env_vars_recursive(config_data, preserve_keys={'base_url'})
-        logger.error(f"Unsupported config file format: {config_path.suffix}")
-        return None
-    
-    except FileNotFoundError:
-        logger.warning(f"Config file not found: {config_path}")
-        return None
-    except Exception as e:
-        logger.error(f"Failed to load config: {e}")
-        return None
-
-
-def substitute_env_vars_recursive(data: Any, preserve_keys: set = None) -> Any:
-    """Recursively substitute environment variables in nested data structures.
-    
-    Args:
-        data: The data to process
-        preserve_keys: Set of keys to preserve without substitution (for base_url injection)
-    """
-    if preserve_keys is None:
-        preserve_keys = set()
+            grid.add_row("Modified", mtime.strftime('%Y-%m-%d %H:%M:%S'))
         
-    if isinstance(data, str):
-        return substitute_env_vars(data)
-    elif isinstance(data, dict):
-        result = {}
-        for key, value in data.items():
-            # Preserve environment variable references for specific keys
-            if key in preserve_keys and isinstance(value, str) and value.startswith('${') and value.endswith('}'):
-                result[key] = value  # Keep original env var reference
-            else:
-                result[key] = substitute_env_vars_recursive(value, preserve_keys)
-        return result
-    elif isinstance(data, list):
-        return [substitute_env_vars_recursive(item, preserve_keys) for item in data]
-    else:
-        return data
+        console.print(Panel(grid, title=f"Service: [accent]{service_key}[/accent]", box=box.ROUNDED))
 
-
-def load_services_from_config(generator: ClientGenerator, config_file: str = CONFIG_FILE) -> bool:
-    """Load services from configuration file into generator."""
-    config_path = Path(config_file)
+# ============================================================================
+# BUILDER PATTERN - Config Loading
+# ============================================================================
+class ConfigLoader:
+    """Loads and parses configuration files."""
     
-    # Check if config file exists
-    if not config_path.exists():
-        logger.error(f"Configuration file not found: {config_file}")
-        logger.error("Available option: oasist_config.json (JSON format)")
-        return False
+    @staticmethod
+    def load(generator: ClientGenerator, config_file: str) -> bool:
+        """Load services from config file."""
+        config_path = Path(config_file)
+        
+        if not config_path.exists():
+            logger.error(f"Config file not found: {config_file}")
+            logger.error(f"Please create '{config_file}' in current directory")
+            return False
+        
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config_data = substitute_recursive(json.load(f))
+        except FileNotFoundError:
+            logger.error(f"Config file not found: {config_file}")
+            return False
+        except PermissionError:
+            logger.error(f"Permission denied reading config file: {config_file}")
+            return False
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in config file (line {e.lineno}, col {e.colno}): {e.msg}")
+            return False
+        except UnicodeDecodeError as e:
+            logger.error(f"Invalid encoding in config file (expected UTF-8): {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error loading config: {type(e).__name__}: {e}")
+            return False
+        
+        if 'output_dir' in config_data:
+            generator.output_base = Path(config_data['output_dir'])
+        
+        services_loaded = (ConfigLoader._load_projects(generator, config_data.get('projects', {})) +
+                          ConfigLoader._load_services(generator, config_data.get('services', [])))
+        
+        if services_loaded == 0:
+            logger.error("No services found in config")
+            return False
+        
+        logger.info(f"✓ Loaded {services_loaded} services from {config_file}")
+        return True
     
-    config_data = load_config_from_file(config_path)
-    
-    if not config_data:
-        logger.error("Failed to parse configuration file")
-        return False
-    
-    # Update output directory if specified (do not create it eagerly)
-    if 'output_dir' in config_data:
-        generator.output_base = Path(config_data['output_dir'])
-    
-    # Load services from Orval-like 'projects' or legacy 'services'
-    projects = config_data.get('projects')
-    services_loaded = 0
-    if isinstance(projects, dict) and projects:
+    @staticmethod
+    def _load_projects(generator: ClientGenerator, projects: Dict[str, Any]) -> int:
+        """Load Orval-style projects.
+        
+        Args:
+            generator: ClientGenerator instance to register services with
+            projects: Dictionary mapping project keys to their configurations
+            
+        Returns:
+            Number of projects successfully loaded
+        """
+        count = 0
         for key, proj in projects.items():
-            if not key or not isinstance(proj, dict):
+            if not isinstance(proj, dict):
                 continue
             input_cfg = proj.get('input', {}) or {}
             output_cfg = proj.get('output', {}) or {}
-
-            config = ServiceConfig(
-                name=output_cfg.get('name', key),
-                schema_url=input_cfg.get('target', ''),
-                output_dir=output_cfg.get('dir', key),
-                base_url=output_cfg.get('base_url', ''),
-                package_name=output_cfg.get('package_name', ''),
-                request_headers={},  # headers handled internally
-                request_params=input_cfg.get('params', {}) or {},
-                prefer_json=bool(input_cfg.get('prefer_json', False)),
-                disable_post_hooks=bool(output_cfg.get('disable_post_hooks', True)),
-            )
-            generator.add_service(key, config)
-            services_loaded += 1
-    else:
-        services = config_data.get('services', [])
+            
+            try:
+                config = ServiceConfig(
+                    name=output_cfg.get('name', key),
+                    schema_url=input_cfg.get('target', ''),
+                    output_dir=output_cfg.get('dir', key),
+                    base_url=output_cfg.get('base_url', ''),
+                    package_name=output_cfg.get('package_name', ''),
+                    request_params=input_cfg.get('params', {}) or {},
+                    request_headers=input_cfg.get('headers', {}) or {},
+                    prefer_json=bool(input_cfg.get('prefer_json', False)),
+                    disable_post_hooks=bool(output_cfg.get('disable_post_hooks', True)),
+                )
+                generator.add_service(key, config)
+                count += 1
+            except ValueError as e:
+                logger.warning(f"Skipping invalid project '{key}': {e}")
+        return count
+    
+    @staticmethod
+    def _load_services(generator: ClientGenerator, services: List[Dict[str, Any]]) -> int:
+        """Load legacy services format.
+        
+        Args:
+            generator: ClientGenerator instance to register services with
+            services: List of service configuration dictionaries
+            
+        Returns:
+            Number of services successfully loaded
+        """
+        count = 0
         for service in services:
             key = service.get('key')
             if not key:
-                logger.warning(f"Skipping service without 'key' field: {service}")
+                logger.warning("Skipping service without 'key' field")
                 continue
-            config = ServiceConfig(
-                name=service.get('name', key),
-                schema_url=service.get('schema_url', ''),
-                output_dir=service.get('output_dir', key),
-                base_url=service.get('base_url', ''),
-                package_name=service.get('package_name', ''),
-                request_headers={},  # headers handled internally
-                request_params=service.get('request_params', {}) or {},
-                prefer_json=bool(service.get('prefer_json', False)),
-                disable_post_hooks=bool(service.get('disable_post_hooks', True)),
-            )
-            generator.add_service(key, config)
-            services_loaded += 1
+            try:
+                config = ServiceConfig(
+                    name=service.get('name', key),
+                    schema_url=service.get('schema_url', ''),
+                    output_dir=service.get('output_dir', key),
+                    base_url=service.get('base_url', ''),
+                    package_name=service.get('package_name', ''),
+                    request_params=service.get('request_params', {}) or {},
+                    request_headers=service.get('request_headers', {}) or {},
+                    prefer_json=bool(service.get('prefer_json', False)),
+                    disable_post_hooks=bool(service.get('disable_post_hooks', True)),
+                )
+                generator.add_service(key, config)
+                count += 1
+            except ValueError as e:
+                logger.warning(f"Skipping invalid service '{key}': {e}")
+        return count
 
-    if services_loaded == 0:
-        logger.error("No services found in configuration file")
+# ============================================================================
+# COMMAND PATTERN - CLI Commands
+# ============================================================================
+class Command(ABC):
+    """Base command interface."""
+    @abstractmethod
+    def execute(self, generator: ClientGenerator, args: list) -> None:
+        pass
+
+class ListCommand(Command):
+    """List services command."""
+    def execute(self, generator: ClientGenerator, args: list) -> None:
+        generator.list_services()
+
+class GenerateCommand(Command):
+    """Generate single service command."""
+    def execute(self, generator: ClientGenerator, args: list) -> None:
+        if len(args) < 2:
+            console.print(Panel.fit("Missing service name. Usage: oasist generate <service>", 
+                                   title="Error", style="error"))
+            return
+        generator.generate(args[1], '--force' in args)
+
+class GenerateAllCommand(Command):
+    """Generate all services command."""
+    def execute(self, generator: ClientGenerator, args: list) -> None:
+        generator.generate_all('--force' in args)
+
+class InfoCommand(Command):
+    """Show service info command."""
+    def execute(self, generator: ClientGenerator, args: list) -> None:
+        if len(args) < 2:
+            console.print(Panel.fit("Missing service name. Usage: oasist info <service>", 
+                                   title="Error", style="error"))
+            return
+        generator.info(args[1])
+
+class CommandRegistry:
+    """Registry for CLI commands."""
+    _commands = {
+        CMD_LIST: ListCommand(),
+        CMD_GENERATE: GenerateCommand(),
+        CMD_GENERATE_ALL: GenerateAllCommand(),
+        CMD_INFO: InfoCommand(),
+    }
+    
+    @staticmethod
+    def execute(command: str, generator: ClientGenerator, args: list) -> bool:
+        """Execute command if registered."""
+        cmd = CommandRegistry._commands.get(command)
+        if cmd:
+            cmd.execute(generator, args)
+            return True
         return False
-    logger.info(f"✓ Loaded {services_loaded} services from {config_file}")
-    return True
 
+# ============================================================================
+# CLI HELP
+# ============================================================================
+class HelpDisplay:
+    """Displays help information."""
+    
+    @staticmethod
+    def show_main():
+        """Show main help."""
+        help_text = [
+            ("[bold]USAGE[/bold]", "oasist [global-options] <command> [options]"),
+            ("", ""),
+            ("[bold]GLOBAL OPTIONS[/bold]", ""),
+            ("--config, -c <file>", "Config file path (default: oasist_config.json)"),
+            ("--verbose, -v", "Enable verbose/debug logging"),
+            ("", ""),
+            ("[bold]COMMANDS[/bold]", ""),
+            ("list", "List all services and status"),
+            ("generate <service>", "Generate client for service"),
+            ("generate-all", "Generate all clients"),
+            ("info <service>", "Show service details"),
+            ("help [command]", "Show help"),
+            ("", ""),
+            ("[bold]OPTIONS[/bold]", ""),
+            ("--help, -h", "Show help"),
+            ("--version, -V", "Show version"),
+            ("--force", "Regenerate existing clients"),
+            ("", ""),
+            ("[bold]EXAMPLES[/bold]", ""),
+            ("oasist list", "List services"),
+            ("oasist -v generate myapi", "Generate with verbose output"),
+            ("oasist -c prod.json generate myapi", "Use custom config"),
+            ("oasist generate myapi --force", "Force regenerate"),
+            ("oasist generate-all", "Generate all"),
+            ("oasist info myapi", "Show service info"),
+        ]
+        
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(style="accent")
+        grid.add_column()
+        for col1, col2 in help_text:
+            grid.add_row(col1, col2)
+        
+        console.print(Panel(grid, title="OASist Client Generator", box=box.ROUNDED))
+    
+    @staticmethod
+    def show_command(command: str):
+        """Show command-specific help."""
+        help_details = {
+            'list': ('List configured services', 'oasist list', None),
+            'generate': ('Generate client for service', 'oasist generate <service> [--force]', 
+                        ['--force: Regenerate if exists']),
+            'generate-all': ('Generate all clients', 'oasist generate-all [--force]', 
+                           ['--force: Regenerate if exists']),
+            'info': ('Show service details', 'oasist info <service>', None),
+        }
+        
+        if command not in help_details:
+            HelpDisplay.show_main()
+            return
+        
+        desc, usage, options = help_details[command]
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column()
+        grid.add_row(f"[bold]{command}[/bold]")
+        grid.add_row("")
+        grid.add_row(desc)
+        grid.add_row("")
+        grid.add_row("[bold]USAGE[/bold]")
+        grid.add_row(usage)
+        
+        if options:
+            grid.add_row("")
+            grid.add_row("[bold]OPTIONS[/bold]")
+            for opt in options:
+                grid.add_row(f"  {opt}")
+        
+        console.print(Panel(grid, title="Command Help", box=box.ROUNDED))
+
+# ============================================================================
+# MAIN CLI ENTRY
+# ============================================================================
+def parse_args(args: List[str]) -> tuple:
+    """Parse command line arguments.
+    
+    Args:
+        args: List of command line arguments
+        
+    Returns:
+        Tuple of (config_file, verbose, remaining_args)
+    """
+    config_file = CONFIG_FILE
+    verbose = False
+    remaining = []
+    i = 0
+    
+    while i < len(args):
+        arg = args[i]
+        if arg in ['--config', '-c'] and i + 1 < len(args):
+            config_file = args[i + 1]
+            i += 2
+        elif arg in ['--verbose', '-v']:
+            verbose = True
+            i += 1
+        else:
+            remaining.append(arg)
+            i += 1
+    
+    return config_file, verbose, remaining
 
 def main():
     """CLI entry point."""
-    import sys
     try:
         from . import __version__
     except ImportError:
-        # Fallback when run as script
         try:
             import oasist
             __version__ = oasist.__version__
         except ImportError:
             __version__ = "unknown"
-
-    # Parse command line arguments first
-    args = sys.argv[1:]
-
-    # Check for version flag first
-    if len(args) > 0 and args[0] in ['--version', '-V']:
+    
+    raw_args = sys.argv[1:]
+    
+    # Parse global flags before processing commands
+    config_file, verbose, args = parse_args(raw_args)
+    
+    # Set logging level based on verbose flag
+    if verbose:
+        logger.setLevel(logging.DEBUG)
+        logger.debug("Verbose logging enabled")
+    
+    # Handle version and help flags
+    if args and args[0] in ['--version', '-V']:
         console.print(f"oasist {__version__}")
-        return
-
-    # Global help or `help` alias (show before banner)
-    if not args or args[0] in ['-h', '--help', 'help']:
-        if len(args) > 1:
-            print_command_help(args[1])
-        else:
-            print_help()
-        return
-
-    # Fancy banner
-    banner_text = Text("OASist Client Generator", style="accent")
-    subtitle = Text("Generate Python clients from OpenAPI schemas", style="dim")
-    banner = Panel(
-        Align.center(Text.assemble("\n", banner_text, "\n", subtitle, "\n"), vertical="middle"),
-        box=box.ROUNDED,
-        padding=(1, 2),
-        title="✨",
-        border_style="accent",
-    )
-    console.print(banner)
+        return EXIT_SUCCESS
+    
+    if not args or args[0] in ['-h', '--help', CMD_HELP]:
+        HelpDisplay.show_command(args[1] if len(args) > 1 else '')
+        return EXIT_SUCCESS
+    
+    # Show banner
+    console.print(Panel(
+        Align.center(Text.assemble(
+            "\n", Text("OASist Client Generator", style="accent"),
+            "\n", Text("Generate Python clients from OpenAPI schemas", style="dim"), "\n"
+        ), vertical="middle"),
+        box=box.ROUNDED, padding=(1, 2), title="✨", border_style="accent"
+    ))
     console.print(Rule(style="dim"))
-
-    # Initialize generator with configured output directory
+    
+    # Initialize and load config
     generator = ClientGenerator(output_base=Path(OUTPUT_DIR))
-
-    # Load services from configuration file
+    
     with console.status("[accent]Loading configuration...", spinner="dots"):
-        config_loaded = load_services_from_config(generator, CONFIG_FILE)
-
-    # Exit if no configuration loaded
-    if not config_loaded:
-        logger.error(f"Failed to load configuration from {CONFIG_FILE}")
-        logger.error("Please create a configuration file: oasist_config.json")
-        return
+        if not ConfigLoader.load(generator, config_file):
+            logger.error(f"Failed to load config from {config_file}")
+            return EXIT_ERROR
     
-    command = args[0]
-    rest = args[1:]
-    # Per-command help flags
-    if '-h' in rest or '--help' in rest:
-        print_command_help(command)
-        return
-    
-    force = '--force' in rest
+    # Handle per-command help
+    if '-h' in args or '--help' in args:
+        HelpDisplay.show_command(args[0])
+        return EXIT_SUCCESS
     
     # Execute command
-    if command == 'list':
-        generator.list_services()
-    elif command == 'generate-all':
-        generator.generate_all(force)
-        # Summary already printed inside generate_all
-    elif command == 'generate' and len(args) > 1:
-        generator.generate(args[1], force)
-    elif command == 'info' and len(args) > 1:
-        generator.info(args[1])
-    else:
+    if not CommandRegistry.execute(args[0], generator, args):
         console.print(Panel.fit("Invalid command. Use --help for usage.", title="Error", style="error"))
+        return EXIT_ERROR
+    
+    return EXIT_SUCCESS
 
-
-def print_help():
-    """Display usage information."""
-    content = Table.grid(padding=(0,1))
-    content.add_column()
-    content.add_row("[bold]OASist Client Generator[/bold]")
-    content.add_row("")
-    content.add_row("[bold]USAGE[/bold]")
-    content.add_row("oasist <command> [options]")
-    content.add_row("")
-    content.add_row("[bold]COMMANDS[/bold]")
-    content.add_row("list                    List all services and their status")
-    content.add_row("generate <service>      Generate client for specific service")
-    content.add_row("generate-all            Generate all clients")
-    content.add_row("info <service>          Show service details")
-    content.add_row("help [command]          Show general or command-specific help")
-    content.add_row("")
-    content.add_row("[bold]GLOBAL OPTIONS[/bold]")
-    content.add_row("--help, -h              Show this help message")
-    content.add_row("--version, -V           Show version information")
-    content.add_row("")
-    content.add_row("[bold]COMMON OPTIONS BY COMMAND[/bold]")
-    content.add_row("generate, generate-all  --force  Regenerate even if exists")
-    content.add_row("")
-    content.add_row("[bold]EXAMPLES[/bold]")
-    content.add_row("oasist --help")
-    content.add_row("oasist --version")
-    content.add_row("oasist help generate")
-    content.add_row("oasist generate --help")
-    content.add_row("oasist list")
-    content.add_row("oasist generate user")
-    content.add_row("oasist generate user --force")
-    content.add_row("oasist generate-all")
-    content.add_row("oasist info user")
-    console.print(Panel(content, title="Help", box=box.ROUNDED))
-
-
-def print_command_help(command: str) -> None:
-    """Display help for a specific command."""
-    command = (command or '').strip()
-    if command == 'list':
-        body = Table.grid(padding=(0,1))
-        body.add_column()
-        body.add_row("[bold]list[/bold]")
-        body.add_row("")
-        body.add_row("List all configured services and their generation status.")
-        body.add_row("")
-        body.add_row("[bold]USAGE[/bold]")
-        body.add_row("oasist list [--help|-h]")
-        console.print(Panel(body, title="Command Help", box=box.ROUNDED))
-        return
-    if command == 'generate':
-        body = Table.grid(padding=(0,1))
-        body.add_column()
-        body.add_row("[bold]generate[/bold]")
-        body.add_row("")
-        body.add_row("Generate client for a specific service key defined in your config.")
-        body.add_row("")
-        body.add_row("[bold]USAGE[/bold]")
-        body.add_row("oasist generate <service> [--force] [--help|-h]")
-        body.add_row("")
-        body.add_row("[bold]OPTIONS[/bold]")
-        body.add_row("--force     Regenerate even if the client already exists (overwrite)")
-        console.print(Panel(body, title="Command Help", box=box.ROUNDED))
-        return
-    if command == 'generate-all':
-        body = Table.grid(padding=(0,1))
-        body.add_column()
-        body.add_row("[bold]generate-all[/bold]")
-        body.add_row("")
-        body.add_row("Generate clients for all configured services.")
-        body.add_row("")
-        body.add_row("[bold]USAGE[/bold]")
-        body.add_row("oasist generate-all [--force] [--help|-h]")
-        body.add_row("")
-        body.add_row("[bold]OPTIONS[/bold]")
-        body.add_row("--force     Regenerate even if clients already exist (overwrite)")
-        console.print(Panel(body, title="Command Help", box=box.ROUNDED))
-        return
-    if command == 'info':
-        body = Table.grid(padding=(0,1))
-        body.add_column()
-        body.add_row("[bold]info[/bold]")
-        body.add_row("")
-        body.add_row("Show detailed information for a specific service key.")
-        body.add_row("")
-        body.add_row("[bold]USAGE[/bold]")
-        body.add_row("oasist info <service> [--help|-h]")
-        console.print(Panel(body, title="Command Help", box=box.ROUNDED))
-        return
-    if command in ('-h', '--help', 'help', ''):
-        print_help()
-        return
-    console.print(Panel.fit(f"Unknown command '{command}'. Use --help for a list of commands.", title="Help", style="warning"))
-
-
-# if __name__ == "__main__":
-#     from ..oasist.oasist import main as _main  # type: ignore
-#     _main()
-
-
-
+if __name__ == "__main__":
+    sys.exit(main())

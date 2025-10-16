@@ -17,7 +17,12 @@
     "test": {
       "input": {
         "target": "${TEST_SCHEMA_URL}",
-        "prefer_json": true
+        "prefer_json": true, 
+        "_comment": "Optional headers for the schema fetch request",
+        "headers": {
+          "Authorization": "Bearer ${API_TOKEN}",
+          "X-API-Key": "${API_KEY:default_key}"
+        }
       },
       "output": {
         "dir": "test",

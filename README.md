@@ -2,17 +2,19 @@
 
 Generate type-safe Python clients from OpenAPI schemas with a beautiful CLI interface. Supports both JSON and YAML schemas with Orval-inspired configuration.
 
-with using **[openapi-python-client](https://github.com/openapi-generators/openapi-python-client)**
+Built on top of **[openapi-python-client](https://github.com/openapi-generators/openapi-python-client)** with enhanced features and developer experience.
 
 ## Features
 
-- 🚀 Single-file implementation with rich CLI interface
+- 🚀 Clean, modular Python package with rich CLI interface
 - 📦 Generate type-safe Python clients from OpenAPI specs (JSON/YAML)
-- 🔄 Schema sanitization and validation
-- 🎯 Orval-inspired configuration format
-- 🏗️ Built with design patterns (Factory, Command, Dataclass)
-- ⚡ Automatic base URL injection and post-hook management
+- 🔄 Schema sanitization and validation with security fixes
+- 🎯 Orval-inspired configuration format with environment variable support
+- 🏗️ Built with design patterns (Strategy, Command, Dataclass)
+- ⚡ Automatic base URL detection and post-hook management
 - 🎨 Beautiful terminal UI with progress indicators
+- 🔒 Path traversal protection and input validation
+- 🔁 Automatic retry logic for common failures
 
 ## Installation
 
@@ -38,13 +40,73 @@ oasist info user
 
 # Force regenerate existing client
 oasist generate user --force
+
+# Use custom config file
+oasist -c production.json generate user
+
+# Enable verbose/debug logging
+oasist -v generate user
 ```
 
 ## Configuration
 
-### Configuration
-
 The generator supports both JSON and YAML OpenAPI documents. It pre-fetches the schema with optional headers/params, then generates via a local temp file to ensure consistent handling of JSON and YAML. Configuration is provided via a single JSON file using an Orval-inspired "projects" structure.
+
+### Environment Variable Substitution
+
+OASist supports environment variable substitution in configuration files using the `${VAR}` or `${VAR:default}` syntax:
+
+- `${VAR}` - Replace with environment variable value (warns if not found)
+- `${VAR:default}` - Replace with environment variable value or use default if not found
+
+Example:
+```json
+{
+  "projects": {
+    "api": {
+      "input": {
+        "target": "${API_SCHEMA_URL:http://localhost:8000/openapi.json}"
+      },
+      "output": {
+        "base_url": "${API_BASE_URL}",
+        "dir": "api_client"
+      }
+    }
+  }
+}
+```
+
+Create a `.env` file in your project root:
+```
+API_SCHEMA_URL=https://api.production.com/openapi.json
+API_BASE_URL=https://api.production.com
+API_TOKEN=your_secret_token_here
+```
+
+### Custom Headers
+
+You can specify custom headers for schema fetch requests, which is useful for authenticated endpoints:
+
+```json
+{
+  "projects": {
+    "protected_api": {
+      "input": {
+        "target": "https://api.example.com/openapi.json",
+        "headers": {
+          "Authorization": "Bearer ${API_TOKEN}",
+          "X-Custom-Header": "custom-value"
+        }
+      },
+      "output": {
+        "dir": "protected_api_client"
+      }
+    }
+  }
+}
+```
+
+### Basic Configuration
 
 Create `oasist_config.json` in your project root:
 
@@ -109,6 +171,7 @@ Create `oasist_config.json` in your project root:
 | `target` | Yes | URL to OpenAPI schema endpoint |
 | `prefer_json` | No | If true, prefers JSON format over YAML |
 | `params` | No | Query parameters for schema fetch requests |
+| `headers` | No | Custom HTTP headers for schema fetch requests |
 
 #### Project Output Parameters
 | Parameter | Required | Description |
@@ -134,6 +197,21 @@ user = client.users.get_user(user_id=123)
 ```
 
 ## All Commands
+
+### Global Options
+
+```bash
+# Use custom configuration file
+oasist -c custom_config.json <command>
+oasist --config custom_config.json <command>
+
+# Enable verbose/debug logging
+oasist -v <command>
+oasist --verbose <command>
+
+# Combine options
+oasist -v -c prod.json generate-all
+```
 
 ### Basic Commands
 
@@ -202,9 +280,11 @@ OASist/
 ## Requirements
 
 - Python 3.8+
-- openapi-python-client
-- requests
-- pyyaml
+- openapi-python-client >= 0.26.1
+- requests >= 2.31.0
+- pyyaml >= 6.0.1
+- rich >= 13.7.0
+- python-dotenv >= 1.0.1
 
 ## Troubleshooting
 
@@ -233,10 +313,24 @@ logging.basicConfig(level=logging.DEBUG)
 
 ## Design Patterns Used
 
-- **Factory Pattern**: `ClientGenerator` creates and manages client generation
-- **Command Pattern**: CLI commands encapsulate different operations
-- **Dataclass Pattern**: Immutable `ServiceConfig` objects
-- **Builder Pattern**: Progressive configuration building
+OASist uses several design patterns to ensure maintainability and extensibility:
+
+- **Strategy Pattern**: `SchemaParser` protocol for pluggable JSON/YAML parsing
+- **Command Pattern**: CLI commands encapsulate different operations (list, generate, info)
+- **Dataclass Pattern**: Type-safe `ServiceConfig` with validation
+- **Context Manager**: Temporary file management with automatic cleanup
+- **Template Method**: Generator execution with customizable hooks
+
+### Why the Patterns?
+
+While this adds some code complexity, the benefits are:
+
+✅ **Easy to extend** - Add new parsers, commands, or validators without touching existing code  
+✅ **Type-safe** - Dataclasses provide validation and IDE autocomplete  
+✅ **Testable** - Each component can be tested independently  
+✅ **Maintainable** - Clear separation of concerns makes debugging easier  
+
+For **simple use cases**, you only interact with the CLI - the patterns are invisible. For **advanced use cases**, the modular design allows programmatic usage and customization.
 
 ## Django Integration (Optional)
 
@@ -326,15 +420,36 @@ $ oasist info user_service
 
 ## Contributing
 
-This is a single-file tool designed for simplicity. To extend:
+Contributions are welcome! To extend or modify:
 
-1. Add services in the `main()` function
-2. Modify `ClientGenerator` class for custom behavior
-3. Add new commands in the command handling section
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes with appropriate tests
+4. Submit a pull request
+
+### Development Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/AhEsmaeili79/oasist.git
+cd oasist
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # or venv\Scripts\activate on Windows
+
+# Install in development mode
+pip install -e .
+
+# Run tests
+pytest
+```
 
 ## License
 
-MIT License - Part of the project
+MIT License - See [LICENSE](LICENSE) file for details
+
+Copyright (c) 2024 AH Esmaeili
 
 ## Support
 
