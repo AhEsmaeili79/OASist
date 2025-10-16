@@ -248,64 +248,15 @@ class ClientGenerator:
     def _inject_base_url_default(self, client_file: Path, base_url: str, original_base_url: str = None) -> None:
         """Inject default base_url into generated client.py for both Client types.
 
-        This updates the attrs field declarations to include a default value that supports
-        both environment variables and hardcoded values:
+        This updates the attrs field declarations to include a default value:
             _base_url: str = field(default="...", alias="base_url")
+        
+        The function is currently disabled to keep generated clients unchanged.
+        Environment variables are resolved in oasist_config.json at generation time only.
         """
-        try:
-            text = client_file.read_text(encoding='utf-8')
-        except FileNotFoundError:
-            return
-        except Exception:
-            return
-
-        # Use original_base_url if provided (this preserves the original config value)
-        config_base_url = original_base_url if original_base_url is not None else base_url
-        
-        # Escape the base_url for use in Python string literal
-        escaped_base_url = base_url.replace('\\', '\\\\').replace('"', '\\"')
-        
-        # Determine if this is an environment variable reference or hardcoded value
-        if config_base_url.startswith('${') and config_base_url.endswith('}'):
-            # Extract environment variable name from ${VAR_NAME} or ${VAR_NAME:default}
-            env_match = re.match(r'\$\{([^}:]+)(?::([^}]*))?\}', config_base_url)
-            if env_match:
-                env_var_name = env_match.group(1)
-                fallback_value = env_match.group(2) if env_match.group(2) is not None else ""
-                default_value = f'os.getenv("{env_var_name}", "{fallback_value}")'
-            else:
-                # Fallback if pattern doesn't match
-                default_value = f'os.getenv("", "{escaped_base_url}")'
-        else:
-            # Hardcoded value - use empty env var name with hardcoded fallback
-            default_value = f'os.getenv("", "{escaped_base_url}")'
-        
-        # Add os import if not already present
-        if 'import os' not in text and 'from os import' not in text:
-            # Find the first import statement and add os import after it
-            import_match = re.search(r'(from typing import[^\n]*\n)', text)
-            if import_match:
-                text = text.replace(import_match.group(1), import_match.group(1) + 'import os\n')
-            else:
-                # Fallback: add after the first line
-                lines = text.split('\n')
-                if len(lines) > 1:
-                    lines.insert(1, 'import os')
-                    text = '\n'.join(lines)
-
-        pattern = r"_base_url:\s*str\s*=\s*field\((?:\s*alias=\"base_url\"\s*)\)"
-        replacement = f'_base_url: str = field(default={default_value}, alias="base_url")'
-        new_text = re.sub(pattern, replacement, text)
-
-        # If alias-first or different argument order was used, handle that as well
-        pattern_alt = r"_base_url:\s*str\s*=\s*field\(alias=\"base_url\"\s*\)"
-        new_text = re.sub(pattern_alt, replacement, new_text)
-
-        if new_text != text:
-            try:
-                client_file.write_text(new_text, encoding='utf-8', newline='')
-            except Exception:
-                pass
+        # Disabled: No modifications to generated client.py
+        # Environment variables in config are resolved at generation time by ServiceConfig.__post_init__
+        pass
     
     def _write_generator_config_tempfile(self, disable_post_hooks: bool) -> Optional[Path]:
         """Write a minimal config for openapi-python-client to disable post hooks when requested."""
