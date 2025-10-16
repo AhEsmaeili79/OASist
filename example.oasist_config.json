@@ -14,15 +14,16 @@
         "disable_post_hooks": true
       }
     },
-    "communication_service": {
+    "test": {
       "input": {
-        "target": "http://localhost:8002/openapi.json"
+        "target": "${TEST_SCHEMA_URL}",
+        "prefer_json": true
       },
       "output": {
-        "dir": "communication_service",
-        "name": "Communication Service",
-        "base_url": "http://localhost:8002",
-        "package_name": "communication_service",
+        "dir": "test",
+        "name": "Test",
+        "base_url": "${TEST_BASE_URL}",
+        "package_name": "test",
         "disable_post_hooks": true
       }
     },
